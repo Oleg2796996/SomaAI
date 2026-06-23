@@ -124,7 +124,7 @@ struct ProfileView: View {
 
 struct LabVaultView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \.date, order: .reverse) private var tests: [LabTest]
+    @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
     let language: String
     
     @State private var showingAddSheet = false
