@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
+import Vision
 
 struct MainTabView: View {
     @State private var currentLanguage: String = "English"
@@ -121,7 +123,6 @@ struct ProfileView: View {
     
     private func saveProfile() {
         focusedField = false
-        
         isPressed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             isPressed = false
@@ -206,8 +207,11 @@ struct AddLabTestView: View {
     @State private var provider: String = ""
     @State private var date: Date = Date()
     @State private var isPressed = false
-    @State private var showingScanAlert = false
     
+    @State private var selectedItem: PhotosPickerItem? = nil
+    @State private var recognizedText: String = ""
+    @State private var isProcessing = false
+
     var body: some View {
         NavigationStack {
             Form {
@@ -218,11 +222,24 @@ struct AddLabTestView: View {
                 }
                 
                 Section {
-                    Button(action: { showingScanAlert = true }) {
+                    PhotosPicker(selection: $selectedItem, matching: .images) {
                         Label(Localization.somaTranslate("button_scan", language: language), systemImage: "camera.viewfinder")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(isProcessing)
+                }
+                
+                if !recognizedText.isEmpty {
+                    Section(header: Text("OCR Result (Debug)")) {
+                        ScrollView {
+                            Text(recognizedText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(height: 150)
+                    }
                 }
                 
                 Section {
@@ -243,10 +260,58 @@ struct AddLabTestView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .alert("Soma AI", isPresented: $showingScanAlert) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text("Intelligent scanning is under development. You'll be able to upload documents soon!")
+            .onChange(of: selectedItem) { oldValue, newValue in
+                Task {
+                    await handleImageSelection()
+                }
+            }
+        }
+    }
+    
+    private func handleImageSelection() async {
+        guard let item = selectedItem else { return }
+        isProcessing = true
+        
+        do {
+            if let data = try await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                recognizedText = try await performOCR(on: image)
+            }
+        } catch {
+            print("OCR Error: \(error)")
+            recognizedText = "Error processing image."
+        }
+        
+        isProcessing = false
+    }
+    
+    private func performOCR(on image: UIImage) async throws -> String {
+        guard let cgImage = image.cgImage else {
+            throw NSError(domain: "OCR", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get CGImage"])
+        }
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            let request = VNRecognizeTextRequest { request, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                
+                let observations = request.results as? [VNRecognizedTextObservation]
+                let recognizedStrings = observations?.compactMap { $0.topCandidates(1).first?.string } ?? []
+                let fullText = recognizedStrings.joined(separator: "\n")
+                
+                continuation.resume(returning: fullText)
+            }
+            
+            request.recognitionAccuracy = .high
+            request.recognitionLevel = .accurate
+            
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            do {
+                try handler.perform([request])
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
     }
