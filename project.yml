@@ -1,0 +1,16 @@
+name: SomaAI
+options:
+  iosDeploymentTarget: "17.0"
+
+targets:
+  SomaAI:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/App
+      - path: Sources/Models
+      - path: Sources/Views
+    settings:
+      SWIFT_VERSION: 5.9
+      GENERATE_INFOPLIST_FILE: YES
+      PRODUCT_BUNDLE_IDENTIFIER: com.oleg.SomaAI
