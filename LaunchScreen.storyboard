@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document xmlns="http://system.apple.com/CSI/SODA">
+    <view controllers="ViewController"/>
+    <controllers>
+        <ViewController id="laU" class="UIViewController" scene="scene">
+            <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
+            <view class="UIView" controller="laU">
+                <color key="backgroundColor" value="white"/>
+            </view>
+        </ViewController>
+    </controllers>
+    <scenes>
+        <SceneController id="scene" controller=" laU"/>
+    </scenes>
+</document>
