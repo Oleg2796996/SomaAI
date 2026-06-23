@@ -2,24 +2,29 @@ import SwiftUI
 
 struct MainTabView: View {
     var body: some View {
-        TabView {
-            ProfileView()
-                .tabItem {
-                    Label("Profile", systemImage: "person.fill")
-                }
+        ZStack {
+            // Background to force the app to fill the entire simulator screen
+            Color(.systemBackground)
+                .ignoresSafeArea()
 
-            LabVaultView()
-                .tabItem {
-                    Label("Vault", systemImage: "folder.fill")
-                }
+            TabView {
+                ProfileView()
+                    .tabItem {
+                        Label("Profile", systemImage: "person.fill")
+                    }
 
-            BrainView()
-                .tabItem {
-                    Label("Brain", systemImage: "brain.head.profile")
-                }
+                LabVaultView()
+                    .tabItem {
+                        Label("Vault", systemImage: "folder.fill")
+                    }
+
+                BrainView()
+                    .tabItem {
+                        Label("Brain", systemImage: "brain.head.profile")
+                    }
+            }
+            .ignoresSafeArea(.all, edges: .bottom) 
         }
-        // Ensuring the TabView respects safe areas across all device sizes
-        .edgesIgnoringSafeArea(.all) 
     }
 }
 
@@ -34,6 +39,7 @@ struct ProfileView: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
             .navigationTitle("Soma Profile")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -51,6 +57,7 @@ struct LabVaultView: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
             .navigationTitle("Lab Vault")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -68,6 +75,7 @@ struct BrainView: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
             .navigationTitle("Soma Brain")
             .navigationBarTitleDisplayMode(.inline)
         }
