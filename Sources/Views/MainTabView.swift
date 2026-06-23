@@ -8,17 +8,17 @@ struct MainTabView: View {
         TabView {
             ProfileView(language: $currentLanguage)
                 .tabItem {
-                    Label(Localization.translate("tab_profile", language: currentLanguage), systemImage: "person.fill")
+                    Label(Localization.somaTranslate("tab_profile", language: currentLanguage), systemImage: "person.fill")
                 }
 
-            LabVaultView()
+            LabVaultView(language: currentLanguage)
                 .tabItem {
-                    Label(Localization.translate("tab_vault", language: currentLanguage), systemImage: "folder.fill")
+                    Label(Localization.somaTranslate("tab_vault", language: currentLanguage), systemImage: "folder.fill")
                 }
 
             BrainView()
                 .tabItem {
-                    Label(Localization.translate("tab_brain", language: currentLanguage), systemImage: "brain.head.profile")
+                    Label(Localization.somaTranslate("tab_brain", language: currentLanguage), systemImage: "brain.head.profile")
                 }
         }
         .environment(\.locale, .init(identifier: currentLanguage == "Русский" ? "ru" : "en"))
@@ -44,33 +44,33 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(Localization.translate("section_personal", language: language)) {
-                    TextField(Localization.translate("field_name", language: language), text: $fullName)
-                    DatePicker(Localization.translate("field_birthdate", language: language), selection: $birthDate, displayedComponents: .date)
-                    Picker(Localization.translate("field_gender", language: language), selection: $gender) {
+                Section(Localization.somaTranslate("section_personal", language: language)) {
+                    TextField(Localization.somaTranslate("field_name", language: language), text: $fullName)
+                    DatePicker(Localization.somaTranslate("field_birthdate", language: language), selection: $birthDate, displayedComponents: .date)
+                    Picker(Localization.somaTranslate("field_gender", language: language), selection: $gender) {
                         ForEach(genders, id: \.self) { g in
-                            Text(Localization.translate("gender_\(g.lowercased())", language: language))
+                            Text(Localization.somaTranslate("gender_\(g.lowercased())", language: language))
                         }
                     }
                 }
                 
-                Section(Localization.translate("section_health", language: language)) {
-                    TextField(Localization.translate("field_blood", language: language), text: $bloodType)
+                Section(Localization.somaTranslate("section_health", language: language)) {
+                    TextField(Localization.somaTranslate("field_blood", language: language), text: $bloodType)
                     HStack {
-                        TextField(Localization.translate("field_height", language: language), text: $height)
-                        TextField(Localization.translate("field_weight", language: language), text: $weight)
+                        TextField(Localization.somaTranslate("field_height", language: language), text: $height)
+                        TextField(Localization.somaTranslate("field_weight", language: language), text: $weight)
                     }
                 }
                 
-                Section(Localization.translate("section_settings", language: language)) {
-                    Picker(Localization.translate("field_language", language: language), selection: $language) {
+                Section(Localization.somaTranslate("section_settings", language: language)) {
+                    Picker(Localization.somaTranslate("field_language", language: language), selection: $language) {
                         ForEach(languages, id: \.self) { Text($0) }
                     }
                 }
                 
                 Section {
                     Button(action: saveProfile) {
-                        Text(Localization.translate("button_save", language: language))
+                        Text(Localization.somaTranslate("button_save", language: language))
                             .frame(maxWidth: .infinity)
                             .fontWeight(.bold)
                     }
@@ -79,7 +79,7 @@ struct ProfileView: View {
                     .animation(.spring(), value: isPressed)
                 }
             }
-            .navigationTitle(Localization.translate("profile_title", language: language))
+            .navigationTitle(Localization.somaTranslate("profile_title", language: language))
             .onAppear(perform: loadProfile)
         }
     }
@@ -99,7 +99,6 @@ struct ProfileView: View {
     }
     
     private func saveProfile() {
-        // Visual feedback simulation
         isPressed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             isPressed = false
@@ -124,19 +123,131 @@ struct ProfileView: View {
 }
 
 struct LabVaultView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \.date, order: .reverse) private var tests: [LabTest]
+    let language: String
+    
+    @State private var showingAddSheet = false
+    
     var body: some View {
         NavigationStack {
-            VStack {
-                Spacer()
-                Text("Medical Records Archive")
-                    .font(.title2)
-                    .foregroundColor(.secondary)
-                Spacer()
+            List {
+                if tests.isEmpty {
+                    ContentUnavailableView(
+                        Localization.somaTranslate("vault_empty_title", language: language),
+                        systemImage: "folder.badge.plus",
+                        description: Text(Localization.somaTranslate("vault_empty_desc", language: language))
+                    )
+                } else {
+                    ForEach(tests) { test in
+                        NavigationLink(destination: LabTestDetailView(test: test, language: language)) {
+                            VStack(alignment: .leading) {
+                                Text(test.testName)
+                                    .font(.headline)
+                                Text(test.date, style: .date)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .onDelete(perform: deleteTests)
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Lab Vault")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(Localization.somaTranslate("tab_vault", language: language))
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showingAddSheet = true }) {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingAddSheet) {
+                AddLabTestView(language: language)
+            }
         }
+    }
+    
+    private func deleteTests(offsets: IndexSet) {
+        for index in offsets {
+            modelContext.delete(tests[index])
+        }
+    }
+}
+
+struct AddLabTestView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    let language: String
+    
+    @State private var testName: String = ""
+    @State private var provider: String = ""
+    @State private var date: Date = Date()
+    @State private var isPressed = false
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text(Localization.somaTranslate("add_test_section", language: language))) {
+                    TextField(Localization.somaTranslate("field_test_name", language: language), text: $testName)
+                    TextField(Localization.somaTranslate("field_provider", language: language), text: $provider)
+                    DatePicker(Localization.somaTranslate("field_date", language: language), selection: $date, displayedComponents: .date)
+                }
+                
+                Section {
+                    Button(action: saveTest) {
+                        Text(Localization.somaTranslate("button_save", language: language))
+                            .frame(maxWidth: .infinity)
+                            .fontWeight(.bold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .scaleEffect(isPressed ? 0.95 : 1.0)
+                    .animation(.spring(), value: isPressed)
+                }
+            }
+            .navigationTitle(Localization.somaTranslate("add_test_title", language: language))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+    
+    private func saveTest() {
+        isPressed = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            isPressed = false
+        }
+        
+        let newTest = LabTest(date: date, provider: provider, testName: testName)
+        modelContext.insert(newTest)
+        dismiss()
+    }
+}
+
+struct LabTestDetailView: View {
+    let test: LabTest
+    let language: String
+    
+    var body: some View {
+        VStack {
+            Text(test.testName)
+                .font(.title)
+                .fontWeight(.bold)
+            Text(test.provider)
+                .foregroundColor(.secondary)
+            
+            Divider().padding()
+            
+            Text("Markers will appear here")
+                .foregroundColor(.secondary)
+                .italic()
+            
+            Spacer()
+        }
+        .padding()
+        .navigationTitle(Localization.somaTranslate("test_detail_title", language: language))
     }
 }
 

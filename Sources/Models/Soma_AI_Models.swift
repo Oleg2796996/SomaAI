@@ -147,7 +147,14 @@ struct Localization {
             "button_save": "Save Profile",
             "tab_profile": "Profile",
             "tab_vault": "Vault",
-            "tab_brain": "Brain"
+            "tab_brain": "Brain",
+            "vault_empty_desc": "No medical tests found. Add your first one!",
+            "add_test_section": "Test Details",
+            "field_test_name": "Test Name",
+            "field_provider": "Provider/Lab",
+            "field_date": "Test Date",
+            "add_test_title": "New Analysis",
+            "test_detail_title": "Test Details"
         ],
         "Русский": [
             "profile_title": "Профиль Soma",
@@ -167,11 +174,18 @@ struct Localization {
             "button_save": "Сохранить профиль",
             "tab_profile": "Профиль",
             "tab_vault": "Сейф",
-            "tab_brain": "Мозг"
+            "tab_brain": "Мозг",
+            "vault_empty_desc": "Анализы не найдены. Добавьте первый тест!",
+            "add_test_section": "Детали анализа",
+            "field_test_name": "Название анализа",
+            "field_provider": "Лаборатория",
+            "field_date": "Дата анализа",
+            "add_test_title": "Новый анализ",
+            "test_detail_title": "Детали анализа"
         ]
     ]
     
-    static func translate(_ key: String, language: String) -> String {
+    static func somaTranslate(_ key: String, language: String) -> String {
         let lang = (language == "Русский" || language == "English") ? language : "English"
         return strings[lang]?[key] ?? key
     }
