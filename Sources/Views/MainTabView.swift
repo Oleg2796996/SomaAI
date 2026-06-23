@@ -304,8 +304,8 @@ struct AddLabTestView: View {
                 continuation.resume(returning: fullText)
             }
             
-            request.recognitionAccuracy = .high
-            request.recognitionLevel = .accurate
+            // Removed problematic recognitionAccuracy and recognitionLevel calls
+            // Default request settings provide high accuracy for most use cases
             
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
