@@ -6,7 +6,8 @@ struct SomaAIApp: App {
     var body: some Scene {
         WindowGroup {
             MainTabView()
-                .modelContainer(for: [UserProfile.self, LabTest.self, LabMarker.self, Medication.self, HealthEvent.self, Allergy.self, Condition.self])
+            // Temporarily disabling modelContainer to isolate the crash
+            // .modelContainer(for: [UserProfile.self, LabTest.self, LabMarker.self, Medication.self, HealthEvent.self, Allergy.self, Condition.self])
         }
     }
 }
