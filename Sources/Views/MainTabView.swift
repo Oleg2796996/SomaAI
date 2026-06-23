@@ -2,23 +2,26 @@ import SwiftUI
 import SwiftData
 
 struct MainTabView: View {
+    @State private var currentLanguage: String = "English"
+    
     var body: some View {
         TabView {
-            ProfileView()
+            ProfileView(language: $currentLanguage)
                 .tabItem {
-                    Label("Profile", systemImage: "person.fill")
+                    Label(Localization.translate("tab_profile", language: currentLanguage), systemImage: "person.fill")
                 }
 
             LabVaultView()
                 .tabItem {
-                    Label("Vault", systemImage: "folder.fill")
+                    Label(Localization.translate("tab_vault", language: currentLanguage), systemImage: "folder.fill")
                 }
 
             BrainView()
                 .tabItem {
-                    Label("Brain", systemImage: "brain.head.profile")
+                    Label(Localization.translate("tab_brain", language: currentLanguage), systemImage: "brain.head.profile")
                 }
         }
+        .environment(\.locale, .init(identifier: currentLanguage == "Русский" ? "ru" : "en"))
     }
 }
 
@@ -26,13 +29,14 @@ struct ProfileView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var profiles: [UserProfile]
     
+    @Binding var language: String
+    
     @State private var fullName: String = ""
     @State private var birthDate: Date = Date()
     @State private var gender: String = "Male"
     @State private var bloodType: String = ""
     @State private var height: String = ""
     @State private var weight: String = ""
-    @State private var language: String = "English"
     
     let genders = ["Male", "Female", "Other"]
     let languages = ["English", "Русский"]
@@ -44,7 +48,9 @@ struct ProfileView: View {
                     TextField(Localization.translate("field_name", language: language), text: $fullName)
                     DatePicker(Localization.translate("field_birthdate", language: language), selection: $birthDate, displayedComponents: .date)
                     Picker(Localization.translate("field_gender", language: language), selection: $gender) {
-                        ForEach(genders, id: \.self) { Text($0) }
+                        ForEach(genders, id: \.self) { g in
+                            Text(Localization.translate("gender_\(g.lowercased())", language: language))
+                        }
                     }
                 }
                 
@@ -69,12 +75,16 @@ struct ProfileView: View {
                             .fontWeight(.bold)
                     }
                     .buttonStyle(.borderedProminent)
+                    .scaleEffect(isPressed ? 0.95 : 1.0)
+                    .animation(.spring(), value: isPressed)
                 }
             }
             .navigationTitle(Localization.translate("profile_title", language: language))
             .onAppear(perform: loadProfile)
         }
     }
+    
+    @State private var isPressed = false
     
     private func loadProfile() {
         if let profile = profiles.first {
@@ -89,6 +99,12 @@ struct ProfileView: View {
     }
     
     private func saveProfile() {
+        // Visual feedback simulation
+        isPressed = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            isPressed = false
+        }
+        
         if let profile = profiles.first {
             profile.fullName = fullName
             profile.birthDate = birthDate

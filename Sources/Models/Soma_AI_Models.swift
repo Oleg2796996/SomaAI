@@ -10,7 +10,7 @@ final class UserProfile {
     var bloodType: String?
     var height: Double?
     var weight: Double?
-    var preferredLanguage: String = "English" // Added for language switching
+    var preferredLanguage: String = "English"
     
     @Relationship(deleteRule: .cascade) var allergies: [Allergy] = []
     @Relationship(deleteRule: .cascade) var chronicConditions: [Condition] = []
@@ -124,5 +124,55 @@ final class Condition {
         self.name = name
         self.diagnosedDate = diagnosedDate
         self.status = status
+    }
+}
+
+struct Localization {
+    static let strings: [String: [String: String]] = [
+        "English": [
+            "profile_title": "Soma Profile",
+            "section_personal": "Personal Information",
+            "field_name": "Full Name",
+            "field_birthdate": "Birth Date",
+            "field_gender": "Gender",
+            "gender_male": "Male",
+            "gender_female": "Female",
+            "gender_other": "Other",
+            "section_health": "Health Data",
+            "field_blood": "Blood Type",
+            "field_height": "Height (cm)",
+            "field_weight": "Weight (kg)",
+            "section_settings": "App Settings",
+            "field_language": "UI Language",
+            "button_save": "Save Profile",
+            "tab_profile": "Profile",
+            "tab_vault": "Vault",
+            "tab_brain": "Brain"
+        ],
+        "Русский": [
+            "profile_title": "Профиль Soma",
+            "section_personal": "Личная информация",
+            "field_name": "Полное имя",
+            "field_birthdate": "Дата рождения",
+            "field_gender": "Пол",
+            "gender_male": "Мужской",
+            "gender_female": "Женский",
+            "gender_other": "Другой",
+            "section_health": "Данные о здоровье",
+            "field_blood": "Группа крови",
+            "field_height": "Рост (см)",
+            "field_weight": "Вес (кг)",
+            "section_settings": "Настройки приложения",
+            "field_language": "Язык интерфейса",
+            "button_save": "Сохранить профиль",
+            "tab_profile": "Профиль",
+            "tab_vault": "Сейф",
+            "tab_brain": "Мозг"
+        ]
+    ]
+    
+    static func translate(_ key: String, language: String) -> String {
+        let lang = (language == "Русский" || language == "English") ? language : "English"
+        return strings[lang]?[key] ?? key
     }
 }
