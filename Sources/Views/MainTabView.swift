@@ -296,17 +296,11 @@ struct AddLabTestView: View {
                     continuation.resume(throwing: error)
                     return
                 }
-                
                 let observations = request.results as? [VNRecognizedTextObservation]
                 let recognizedStrings = observations?.compactMap { $0.topCandidates(1).first?.string } ?? []
                 let fullText = recognizedStrings.joined(separator: "\n")
-                
                 continuation.resume(returning: fullText)
             }
-            
-            // Removed problematic recognitionAccuracy and recognitionLevel calls
-            // Default request settings provide high accuracy for most use cases
-            
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
                 try handler.perform([request])
@@ -322,6 +316,8 @@ struct AddLabTestView: View {
             isPressed = false
         }
         
+        // В полноценном Soma Brain здесь будет await API.structure(recognizedText)
+        // Для текущего этапа сохраняем базовые данные, чтобы проверить цепочку.
         let newTest = LabTest(date: date, provider: provider, testName: testName)
         modelContext.insert(newTest)
         dismiss()
@@ -342,9 +338,21 @@ struct LabTestDetailView: View {
             
             Divider().padding()
             
-            Text("Markers will appear here")
-                .foregroundColor(.secondary)
-                .italic()
+            if test.markers.isEmpty {
+                Text("Markers will appear here")
+                    .foregroundColor(.secondary)
+                    .italic()
+            } else {
+                List(test.markers) { marker in
+                    HStack {
+                        Text(marker.name)
+                        Spacer()
+                        Text(marker.value)
+                            .fontWeight(.bold)
+                        Text(marker.unit ?? "")
+                    }
+                }
+            }
             
             Spacer()
         }
