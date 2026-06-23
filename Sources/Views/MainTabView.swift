@@ -38,6 +38,9 @@ struct ProfileView: View {
     @State private var height: String = ""
     @State private var weight: String = ""
     
+    // Focus state to handle keyboard dismissal
+    @FocusState private var focusedField: Bool
+    
     let genders = ["Male", "Female", "Other"]
     let languages = ["English", "Русский"]
     
@@ -46,6 +49,7 @@ struct ProfileView: View {
             Form {
                 Section(Localization.somaTranslate("section_personal", language: language)) {
                     TextField(Localization.somaTranslate("field_name", language: language), text: $fullName)
+                        .focused($focusedField)
                     DatePicker(Localization.somaTranslate("field_birthdate", language: language), selection: $birthDate, displayedComponents: .date)
                     Picker(Localization.somaTranslate("field_gender", language: language), selection: $gender) {
                         ForEach(genders, id: \.self) { g in
@@ -56,9 +60,12 @@ struct ProfileView: View {
                 
                 Section(Localization.somaTranslate("section_health", language: language)) {
                     TextField(Localization.somaTranslate("field_blood", language: language), text: $bloodType)
+                        .focused($focusedField)
                     HStack {
                         TextField(Localization.somaTranslate("field_height", language: language), text: $height)
-                        TextField(Localization.somaTranslate("field_weight", language: language), text: $weight)
+                            .focused($focusedField)
+                        TextField(Localization.translate("field_weight", language: language), text: $weight)
+                            .focused($focusedField)
                     }
                 }
                 
@@ -99,6 +106,9 @@ struct ProfileView: View {
     }
     
     private func saveProfile() {
+        // Dismiss keyboard immediately
+        focusedField = false
+        
         isPressed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             isPressed = false
@@ -161,7 +171,7 @@ struct LabVaultView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingAddSheet) {
+            .sheet(isPresented: $showingAddHSheet) {
                 AddLabTestView(language: language)
             }
         }
