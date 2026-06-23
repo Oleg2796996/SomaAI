@@ -14,12 +14,25 @@ final class UserProfile {
     
     @Relationship(deleteRule: .cascade) var allergies: [Allergy] = []
     @Relationship(deleteRule: .cascade) var chronicConditions: [Condition] = []
+    @Relationship(deleteRule: .cascade) var weightHistory: [WeightEntry] = []
     
     init(fullName: String = "", birthDate: Date = Date(), gender: String = "Unknown", preferredLanguage: String = "English") {
         self.fullName = fullName
         self.birthDate = birthDate
         self.gender = gender
         self.preferredLanguage = preferredLanguage
+    }
+}
+
+@Model
+final class WeightEntry {
+    var id: UUID = UUID()
+    var date: Date
+    var value: Double
+    
+    init(date: Date = Date(), value: Double) {
+        self.date = date
+        self.value = value
     }
 }
 
@@ -51,6 +64,7 @@ final class LabMarker {
     var referenceRange: String?
     var flag: String?
     var isCritical: Bool = false
+    var labStandardId: String?
     init(name: String, value: String, unit: String? = nil, loincCode: String? = nil, isCritical: Bool = false) {
         self.name = name
         self.value = value
@@ -144,7 +158,7 @@ struct Localization {
             "field_weight": "Weight (kg)",
             "section_settings": "App Settings",
             "field_language": "UI Language",
-            "button_save": "Save Profile",
+            "button_save": "Save",
             "tab_profile": "Profile",
             "tab_vault": "Vault",
             "tab_brain": "Brain",
@@ -155,7 +169,8 @@ struct Localization {
             "field_provider": "Provider/Lab",
             "field_date": "Test Date",
             "add_test_title": "New Analysis",
-            "test_detail_title": "Test Details"
+            "test_detail_title": "Test Details",
+            "button_scan": "Scan Document"
         ],
         "Русский": [
             "profile_title": "Профиль Soma",
@@ -172,7 +187,7 @@ struct Localization {
             "field_weight": "Вес (кг)",
             "section_settings": "Настройки приложения",
             "field_language": "Язык интерфейса",
-            "button_save": "Сохранить профиль",
+            "button_save": "Сохранить",
             "tab_profile": "Профиль",
             "tab_vault": "Сейф",
             "tab_brain": "Мозг",
@@ -183,7 +198,8 @@ struct Localization {
             "field_provider": "Лаборатория",
             "field_date": "Дата анализа",
             "add_test_title": "Новый анализ",
-            "test_detail_title": "Детали анализа"
+            "test_detail_title": "Детали анализа",
+            "button_scan": "Сканировать документ"
         ]
     ]
     

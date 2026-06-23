@@ -58,13 +58,28 @@ struct ProfileView: View {
                 }
                 
                 Section(Localization.somaTranslate("section_health", language: language)) {
-                    TextField(Localization.somaTranslate("field_blood", language: language), text: $bloodType)
-                        .focused($focusedField)
                     HStack {
-                        TextField(Localization.somaTranslate("field_height", language: language), text: $height)
+                        Text(Localization.somaTranslate("field_blood", language: language))
+                        Spacer()
+                        TextField("", text: $bloodType)
                             .focused($focusedField)
-                        TextField(Localization.somaTranslate("field_weight", language: language), text: $weight)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    HStack {
+                        Text(Localization.somaTranslate("field_height", language: language))
+                        Spacer()
+                        TextField("", text: $height)
                             .focused($focusedField)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
+                    }
+                    HStack {
+                        Text(Localization.somaTranslate("field_weight", language: language))
+                        Spacer()
+                        TextField("", text: $weight)
+                            .focused($focusedField)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.decimalPad)
                     }
                 }
                 
@@ -191,6 +206,7 @@ struct AddLabTestView: View {
     @State private var provider: String = ""
     @State private var date: Date = Date()
     @State private var isPressed = false
+    @State private var showingScanAlert = false
     
     var body: some View {
         NavigationStack {
@@ -199,6 +215,14 @@ struct AddLabTestView: View {
                     TextField(Localization.somaTranslate("field_test_name", language: language), text: $testName)
                     TextField(Localization.somaTranslate("field_provider", language: language), text: $provider)
                     DatePicker(Localization.somaTranslate("field_date", language: language), selection: $date, displayedComponents: .date)
+                }
+                
+                Section {
+                    Button(action: { showingScanAlert = true }) {
+                        Label(Localization.somaTranslate("button_scan", language: language), systemImage: "camera.viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                 }
                 
                 Section {
@@ -218,6 +242,11 @@ struct AddLabTestView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
+            }
+            .alert("Soma AI", isPresented: $showingScanAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Intelligent scanning is under development. You'll be able to upload documents soon!")
             }
         }
     }
