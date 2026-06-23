@@ -40,38 +40,38 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Personal Information") {
-                    TextField("Full Name", text: $fullName)
-                    DatePicker("Birth Date", selection: $birthDate, displayedComponents: .date)
-                    Picker("Gender", selection: $gender) {
+                Section(Localization.translate("section_personal", language: language)) {
+                    TextField(Localization.translate("field_name", language: language), text: $fullName)
+                    DatePicker(Localization.translate("field_birthdate", language: language), selection: $birthDate, displayedComponents: .date)
+                    Picker(Localization.translate("field_gender", language: language), selection: $gender) {
                         ForEach(genders, id: \.self) { Text($0) }
                     }
                 }
                 
-                Section("Health Data") {
-                    TextField("Blood Type", text: $bloodType)
+                Section(Localization.translate("section_health", language: language)) {
+                    TextField(Localization.translate("field_blood", language: language), text: $bloodType)
                     HStack {
-                        TextField("Height (cm)", text: $height)
-                        TextField("Weight (kg)", text: $weight)
+                        TextField(Localization.translate("field_height", language: language), text: $height)
+                        TextField(Localization.translate("field_weight", language: language), text: $weight)
                     }
                 }
                 
-                Section("App Settings") {
-                    Picker("UI Language", selection: $language) {
+                Section(Localization.translate("section_settings", language: language)) {
+                    Picker(Localization.translate("field_language", language: language), selection: $language) {
                         ForEach(languages, id: \.self) { Text($0) }
                     }
                 }
                 
                 Section {
                     Button(action: saveProfile) {
-                        Text("Save Profile")
+                        Text(Localization.translate("button_save", language: language))
                             .frame(maxWidth: .infinity)
                             .fontWeight(.bold)
                     }
                     .buttonStyle(.borderedProminent)
                 }
             }
-            .navigationTitle("Soma Profile")
+            .navigationTitle(Localization.translate("profile_title", language: language))
             .onAppear(perform: loadProfile)
         }
     }
