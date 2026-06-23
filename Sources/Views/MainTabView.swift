@@ -38,7 +38,6 @@ struct ProfileView: View {
     @State private var height: String = ""
     @State private var weight: String = ""
     
-    // Focus state to handle keyboard dismissal
     @FocusState private var focusedField: Bool
     
     let genders = ["Male", "Female", "Other"]
@@ -64,7 +63,7 @@ struct ProfileView: View {
                     HStack {
                         TextField(Localization.somaTranslate("field_height", language: language), text: $height)
                             .focused($focusedField)
-                        TextField(Localization.translate("field_weight", language: language), text: $weight)
+                        TextField(Localization.somaTranslate("field_weight", language: language), text: $weight)
                             .focused($focusedField)
                     }
                 }
@@ -106,7 +105,6 @@ struct ProfileView: View {
     }
     
     private func saveProfile() {
-        // Dismiss keyboard immediately
         focusedField = false
         
         isPressed = true
@@ -171,7 +169,7 @@ struct LabVaultView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showingAddHSheet) {
+            .sheet(isPresented: $showingAddSheet) {
                 AddLabTestView(language: language)
             }
         }
