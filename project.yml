@@ -33,4 +33,7 @@ targets:
         SUPPORTS_MACCATALYST: NO
         SUPPORTED_PLATFORMS: iphoneos iphonesimulator
         INFOPLIST_KEY_UILaunchStoryboardName: LaunchScreen
+        INFOPLIST_KEY_NSCameraUsageDescription: "Soma AI uses the camera to scan medical documents for your personal Health Passport."
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Soma AI accesses photos so you can select medical documents to add to your Health Passport."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Soma AI does not record audio."
         CODE_SIGN_STYLE: Automatic

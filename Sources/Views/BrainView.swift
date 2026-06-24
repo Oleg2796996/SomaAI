@@ -6,10 +6,11 @@ struct BrainView: View {
     @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
 
     @State private var messages: [ChatMessage] = [
-        ChatMessage(role: .assistant, text: "Ask me about your latest lab results, trends, or what to discuss with your doctor.")
+        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: "English"))
     ]
     @State private var inputText: String = ""
     @State private var isLoading = false
+    @State private var scrollTarget: UUID?
     @State private var errorMessage: String? = nil
     @State private var showingError = false
 
@@ -32,12 +33,14 @@ struct BrainView: View {
                         if message.role == .assistant { Spacer(minLength: 20) }
                     }
                     .listRowSeparator(.hidden)
+                    .id(message.id)
                 }
                 .listStyle(.plain)
+                .scrollPosition(id: $scrollTarget, anchor: .bottom)
 
                 VStack(spacing: 8) {
                     HStack(spacing: 12) {
-                        TextField("Ask Soma AI...", text: $inputText, axis: .vertical)
+                        TextField(Localization.somaTranslate("brain_input_placeholder", language: currentLanguage), text: $inputText, axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                             .disabled(isLoading)
 
@@ -53,7 +56,7 @@ struct BrainView: View {
                         .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                     }
 
-                    Text("This assistant organizes data; it does not diagnose. Consult a physician.")
+                    Text(Localization.somaTranslate("brain_disclaimer_footer", language: currentLanguage))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -77,6 +80,7 @@ struct BrainView: View {
 
         let userMessage = ChatMessage(role: .user, text: question)
         messages.append(userMessage)
+        scrollTarget = userMessage.id
         inputText = ""
         isLoading = true
 
@@ -85,7 +89,9 @@ struct BrainView: View {
                 let context = buildContextFragments(for: question)
                 let reply = try await SomaAPIClient.shared.askConsultant(question, context: context)
                 await MainActor.run {
-                    messages.append(ChatMessage(role: .assistant, text: reply, source: .cloud))
+                    let assistantMessage = ChatMessage(role: .assistant, text: reply, source: .cloud)
+                    messages.append(assistantMessage)
+                    scrollTarget = assistantMessage.id
                     isLoading = false
                 }
             } catch {

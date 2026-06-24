@@ -174,7 +174,11 @@ struct Localization {
             "button_camera": "Take Photo",
             "button_photos": "Scan Photos",
             "button_pdf": "Import PDF",
-            "disclaimer_data_only": "For informational purposes only. This is not a diagnosis or medical advice. Consult a licensed physician."
+            "disclaimer_data_only": "For informational purposes only. This is not a diagnosis or medical advice. Consult a licensed physician.",
+            "brain_input_placeholder": "Ask Soma AI...",
+            "brain_disclaimer_footer": "This assistant organizes data; it does not diagnose. Consult a physician.",
+            "error_no_context": "No matching records found. Add lab results first, or ask a general question.",
+            "brain_welcome_message": "Ask me about your latest lab results, trends, or what to discuss with your doctor."
         "Русский": [
             "profile_title": "Профиль Soma",
             "section_personal": "Личная информация",
@@ -206,7 +210,11 @@ struct Localization {
             "button_camera": "Сфотографировать",
             "button_photos": "Выбрать фото",
             "button_pdf": "Импорт PDF",
-            "disclaimer_data_only": "Только для информации. Это не диагноз и не медицинская рекомендация. Обратитесь к врачу."
+            "disclaimer_data_only": "Только для информации. Это не диагноз и не медицинская рекомендация. Обратитесь к врачу.",
+            "brain_input_placeholder": "Спросите Soma AI...",
+            "brain_disclaimer_footer": "Ассистент организует данные, но не ставит диагноз. Обратитесь к врачу.",
+            "error_no_context": "Подходящих записей не найдено. Сначала добавьте анализы или задайте общий вопрос.",
+            "brain_welcome_message": "Спросите меня о последних анализах, тенденциях или о чём обсудить с врачом."
     ]
     
     static func somaTranslate(_ key: String, language: String) -> String {
