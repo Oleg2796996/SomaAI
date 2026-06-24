@@ -21,11 +21,18 @@ struct SomaMarker: Codable, Identifiable {
 class SomaAPIClient {
     static let shared = SomaAPIClient()
     private let endpoint = "https://ai.wormsoft.ru/api/gpt"
-    private let apiKey = "SOMA_SECRET_TOKEN_HERE" // TODO: move to Secrets.plist / Keychain
+
+    private var apiKey: String {
+        do {
+            return try KeychainHelper.shared.read()
+        } catch {
+            return ""
+        }
+    }
 
     func structureText(_ text: String) async throws -> [SomaMarker] {
-        guard apiKey != "SOMA_SECRET_TOKEN_HERE" else {
-            throw NSError(domain: "SomaAPI", code: -2, userInfo: [NSLocalizedDescriptionKey: "API key not configured"])
+        guard !apiKey.isEmpty else {
+            throw NSError(domain: "SomaAPI", code: -2, userInfo: [NSLocalizedDescriptionKey: "API key not configured. Go to Settings → API Key."])
         }
         
         var request = URLRequest(url: URL(string: endpoint)!)
@@ -54,7 +61,6 @@ class SomaAPIClient {
             throw NSError(domain: "SomaAPI", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(httpResponse.statusCode)"])
         }
         
-        // Wormsoft API returns OpenAI-compatible chat completion; content contains JSON string
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let first = choices.first,
@@ -188,6 +194,20 @@ struct ProfileView: View {
                 Section(Localization.somaTranslate("section_settings", language: language)) {
                     Picker(Localization.somaTranslate("field_language", language: language), selection: $language) {
                         ForEach(languages, id: \.self) { Text($0) }
+                    }
+
+                    NavigationLink(destination: APIKeySettingsView()) {
+                        HStack {
+                            Text("Soma API Key")
+                            Spacer()
+                            if (try? KeychainHelper.shared.read()) != nil {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundColor(.green)
+                            } else {
+                                Text("Not set")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     }
                 }
                 
