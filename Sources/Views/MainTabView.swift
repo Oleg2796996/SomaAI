@@ -2,6 +2,80 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 import Vision
+import PDFKit
+
+// MARK: - API Models
+struct SomaBrainResponse: Codable {
+    let markers: [SomaMarker]
+}
+
+struct SomaMarker: Codable, Identifiable {
+    var id: String { name + (unit ?? "") }
+    let name: String
+    let value: String
+    let unit: String?
+    let referenceRange: String?
+    let flag: String? // High, Low, Normal
+}
+
+class SomaAPIClient {
+    static let shared = SomaAPIClient()
+    private let endpoint = "https://ai.wormsoft.ru/api/soma/structure"
+    private let apiKey = "SOMA_SECRET_TOKEN_HERE" // Should be moved to config/secrets
+
+    func structureText(_ text: String) async throws -> [SomaMarker] {
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        
+        let body = ["text": text]
+        request.httpBody = try JSONEncoder().encode(body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw NSError(domain: "SomaAPI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Server error"])
+        }
+        
+        let decoded = try JSONDecoder().decode(SomaBrainResponse.self, from: data)
+        return decoded.markers
+    }
+}
+
+// MARK: - Camera Integration
+struct ImagePicker: UIViewControllerRepresentable {
+    @Binding var image: UIImage?
+    @Environment(\.dismiss) var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ImagePicker
+
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let uiImage = info[.originalImage] as? UIImage {
+                parent.image = uiImage
+            }
+            parent.dismiss()
+        }
+    }
+}
 
 struct MainTabView: View {
     @State private var currentLanguage: String = "English"
@@ -208,10 +282,16 @@ struct AddLabTestView: View {
     @State private var date: Date = Date()
     @State private var isPressed = false
     
-    @State private var selectedItem: PhotosPickerItem? = nil
+    @State private var selectedItems: [PhotosPickerItem] = []
+    @State private var isImportingPDF = false
+    @State private var isShowingCamera = false
+    @State private var capturedImage: UIImage?
     @State private var recognizedText: String = ""
     @State private var isProcessing = false
-
+    
+    @State private var showingVerification = false
+    @State private var pendingMarkers: [SomaMarker] = []
+    
     var body: some View {
         NavigationStack {
             Form {
@@ -222,12 +302,31 @@ struct AddLabTestView: View {
                 }
                 
                 Section {
-                    PhotosPicker(selection: $selectedItem, matching: .images) {
-                        Label(Localization.somaTranslate("button_scan", language: language), systemImage: "camera.viewfinder")
-                            .frame(maxWidth: .infinity)
+                    VStack(spacing: 12) {
+                        // Camera
+                        Button(action: { isShowingCamera = true }) {
+                            Label("Take Photo", systemImage: "camera.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isProcessing)
+                        
+                        // Multi-photo picker
+                        PhotosPicker(selection: $selectedItems, matching: .images) {
+                            Label("Scan Photos (Multi)", systemImage: "photo.on.rectangle.angled")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isProcessing)
+                        
+                        // PDF Picker
+                        Button(action: { isImportingPDF = true }) {
+                            Label("Import PDF", systemImage: "doc.text.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isProcessing)
                     }
-                    .buttonStyle(.bordered)
-                    .disabled(isProcessing)
                 }
                 
                 if !recognizedText.isEmpty {
@@ -243,12 +342,17 @@ struct AddLabTestView: View {
                 }
                 
                 Section {
-                    Button(action: saveTest) {
-                        Text(Localization.somaTranslate("button_save", language: language))
-                            .frame(maxWidth: .infinity)
-                            .fontWeight(.bold)
+                    Button(action: processAndVerify) {
+                        if isProcessing {
+                            ProgressView().progressViewStyle(.circular)
+                        } else {
+                            Text(Localization.somaTranslate("button_save", language: language))
+                                .frame(maxWidth: .infinity)
+                                .fontWeight(.bold)
+                        }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(isProcessing)
                     .scaleEffect(isPressed ? 0.95 : 1.0)
                     .animation(.spring(), value: isPressed)
                 }
@@ -260,28 +364,135 @@ struct AddLabTestView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .onChange(of: selectedItem) { oldValue, newValue in
-                Task {
-                    await handleImageSelection()
+            .onChange(of: selectedItems) { oldValue, newValue in
+                Task { await handleImageSelection() }
+            }
+            .fileImporter(
+                isPresented: $isImportingPDF,
+                allowedContentTypes: [.pdf],
+                onCompletion: { result in
+                    switch result {
+                    case .success(let url):
+                        Task { await handlePDFSelection(url: url) }
+                    case .failure(let error):
+                        print("PDF Error: \(error)")
+                    }
                 }
+            )
+            .sheet(isPresented: $isShowingCamera) {
+                ImagePicker(image: $capturedImage)
+            }
+            .onChange(of: capturedImage) { _, newValue in
+                if let image = newValue {
+                    Task { await handleSingleImageOCR(image) }
+                }
+            }
+            .sheet(isPresented: $showingVerification) {
+                VerificationView(
+                    markers: $pendingMarkers,
+                    language: language,
+                    onConfirm: { confirmedMarkers in
+                        saveFinalTest(with: confirmedMarkers)
+                    }
+                )
             }
         }
     }
     
-    private func handleImageSelection() async {
-        guard let item = selectedItem else { return }
+    private func handleSingleImageOCR(_ image: UIImage) async {
         isProcessing = true
-        
         do {
-            if let data = try await item.loadTransferable(type: Data.self),
-               let image = UIImage(data: data) {
-                recognizedText = try await performOCR(on: image)
-            }
+            let text = try await performOCR(on: image)
+            recognizedText = text
         } catch {
             print("OCR Error: \(error)")
-            recognizedText = "Error processing image."
+        }
+        isProcessing = false
+    }
+    
+    private func handleImageSelection() async {
+        guard !selectedItems.isEmpty else { return }
+        isProcessing = true
+        var allText = ""
+        
+        await withTaskGroup(of: (Int, String).self) { group in
+            for (index, item) in selectedItems.enumerated() {
+                group.addTask {
+                    do {
+                        if let data = try await item.loadTransferable(type: Data.self),
+                           let image = UIImage(data: data) {
+                            let text = try await self.performOCR(on: image)
+                            return (index, text)
+                        }
+                    } catch {
+                        print("OCR Error on page \(index): \(error)")
+                    }
+                    return (index, "")
+                }
+            }
+            
+            var results = [Int: String]()
+            for await (index, text) in group {
+                results[index] = text
+            }
+            
+            allText = results.sorted(by: { $0.key < $1.key })
+                             .map { "--- Page \($0.key + 1) ---\n\($0.value)" }
+                             .joined(separator: "\n\n")
         }
         
+        recognizedText = allText
+        isProcessing = false
+    }
+    
+    private func handlePDFSelection(url: URL) async {
+        isProcessing = true
+        var allText = ""
+        
+        do {
+            if let pdf = PDFDocument(url: url) {
+                let pageCount = pdf.pageCount
+                var images = [UIImage]()
+                
+                for i in 0..<pageCount {
+                    if let page = pdf.page(at: i) {
+                        let pageRect = page.bounds(for: .mediaBox)
+                        let renderer = UIGraphicsImageRenderer(size: pageRect.size)
+                        let img = renderer.image { ctx in
+                            UIColor.white.setFill()
+                            ctx.fill(pageRect)
+                            page.draw(with: .mediaBox.size)
+                        }
+                        images.append(img)
+                    }
+                }
+                
+                var pageResults = [Int: String]()
+                await withTaskGroup(of: (Int, String).self) { group in
+                    for (index, image) in images.enumerated() {
+                        group.addTask {
+                            do {
+                                let text = try await self.performOCR(on: image)
+                                return (index, text)
+                            } catch {
+                                return (index, "")
+                            }
+                        }
+                    }
+                    for await (index, text) in group {
+                        pageResults[index] = text
+                    }
+                }
+                
+                allText = pageResults.sorted(by: { $0.key < $1.key })
+                                     .map { "--- PDF Page \($0.key + 1) ---\n\($0.value)" }
+                                     .joined(separator: "\n\n")
+            }
+        } catch {
+            print("PDF Processing Error: \(error)")
+        }
+        
+        recognizedText = allText
         isProcessing = false
     }
     
@@ -310,17 +521,80 @@ struct AddLabTestView: View {
         }
     }
     
-    private func saveTest() {
+    private func processAndVerify() {
         isPressed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             isPressed = false
         }
         
-        // В полноценном Soma Brain здесь будет await API.structure(recognizedText)
-        // Для текущего этапа сохраняем базовые данные, чтобы проверить цепочку.
+        guard !recognizedText.isEmpty else { return }
+        
+        isProcessing = true
+        Task {
+            do {
+                let markers = try await SomaAPIClient.shared.structureText(recognizedText)
+                pendingMarkers = markers
+                showingVerification = true
+            } catch {
+                print("API Error: \(error)")
+            }
+            isProcessing = false
+        }
+    }
+    
+    private func saveFinalTest(with markers: [SomaMarker]) {
         let newTest = LabTest(date: date, provider: provider, testName: testName)
+        
+        for m in markers {
+            let marker = LabMarker(name: m.name, value: m.value, unit: m.unit)
+            newTest.markers.append(marker)
+        }
+        
         modelContext.insert(newTest)
         dismiss()
+    }
+}
+
+struct VerificationView: View {
+    @Binding var markers: [SomaMarker]
+    let language: String
+    var onConfirm: ([SomaMarker]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(header: Text("Verify Recognized Markers")) {
+                    ForEach($markers) { $marker in
+                        HStack {
+                            TextField("Name", text: $marker.name)
+                            TextField("Value", text: $marker.value)
+                            TextField("Unit", text: Binding(
+                                get: { marker.unit ?? "" },
+                                set: { marker.unit = $0 }
+                            ))
+                            .frame(width: 60)
+                        }
+                    }
+                    .onDelete { indexSet in
+                        markers.remove(atOffsets: indexSet)
+                    }
+                }
+            }
+            .navigationTitle("Verify Data")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Confirm") {
+                        onConfirm(markers)
+                        dismiss()
+                    }
+                    .fontWeight(.bold)
+                }
+            }
+        }
     }
 }
 

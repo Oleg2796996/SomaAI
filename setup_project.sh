@@ -7,9 +7,10 @@ if [ -d "Source" ]; then
     mv Source Sources
 fi
 
-# 2. Create Package.swift
+# 2. Create Package.swift with EXPLICIT swift-tools-version header
 echo "Generating Package.swift..."
 cat <<EOP > Package.swift
+// swift-tools-version: 5.9
 import PackageDescription
 
 let package = Package(
