@@ -20,25 +20,51 @@ struct SomaMarker: Codable, Identifiable {
 
 class SomaAPIClient {
     static let shared = SomaAPIClient()
-    private let endpoint = "https://ai.wormsoft.ru/api/soma/structure"
-    private let apiKey = "SOMA_SECRET_TOKEN_HERE" // Should be moved to config/secrets
+    private let endpoint = "https://ai.wormsoft.ru/api/gpt"
+    private let apiKey = "SOMA_SECRET_TOKEN_HERE" // TODO: move to Secrets.plist / Keychain
 
     func structureText(_ text: String) async throws -> [SomaMarker] {
+        guard apiKey != "SOMA_SECRET_TOKEN_HERE" else {
+            throw NSError(domain: "SomaAPI", code: -2, userInfo: [NSLocalizedDescriptionKey: "API key not configured"])
+        }
+        
         var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         
-        let body = ["text": text]
-        request.httpBody = try JSONEncoder().encode(body)
+        let messages: [[String: String]] = [
+            ["role": "system", "content": "You extract medical lab markers from raw OCR text and return ONLY a JSON object with a 'markers' array. Each marker has: name, value, unit (optional), referenceRange (optional), flag (optional: High/Low/Normal). No markdown, no explanations."],
+            ["role": "user", "content": text]
+        ]
+        let body: [String: Any] = [
+            "model": "wormsoft/code/medium",
+            "messages": messages,
+            "temperature": 0.1
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw NSError(domain: "SomaAPI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Server error"])
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "SomaAPI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
         
-        let decoded = try JSONDecoder().decode(SomaBrainResponse.self, from: data)
+        guard httpResponse.statusCode == 200 else {
+            throw NSError(domain: "SomaAPI", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(httpResponse.statusCode)"])
+        }
+        
+        // Wormsoft API returns OpenAI-compatible chat completion; content contains JSON string
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any],
+              let content = message["content"] as? String,
+              let contentData = content.data(using: .utf8) else {
+            throw NSError(domain: "SomaAPI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Could not parse API response"])
+        }
+        
+        let decoded = try JSONDecoder().decode(SomaBrainResponse.self, from: contentData)
         return decoded.markers
     }
 }
@@ -291,6 +317,8 @@ struct AddLabTestView: View {
     
     @State private var showingVerification = false
     @State private var pendingMarkers: [SomaMarker] = []
+    @State private var apiError: String? = nil
+    @State private var showingErrorAlert = false
     
     var body: some View {
         NavigationStack {
@@ -392,6 +420,11 @@ struct AddLabTestView: View {
                         saveFinalTest(with: confirmedMarkers)
                     }
                 )
+            }
+            .alert("Analysis Error", isPresented: $showingErrorAlert, presenting: apiError) { _ in
+                Button("OK") {}
+            } message: { error in
+                Text(error)
             }
         }
     }
@@ -530,7 +563,10 @@ struct AddLabTestView: View {
                 pendingMarkers = markers
                 showingVerification = true
             } catch {
-                print("API Error: \(error)")
+                let errorMessage = error.localizedDescription
+                apiError = errorMessage
+                showingErrorAlert = true
+                print("API Error: \(errorMessage)")
             }
             isProcessing = false
         }
