@@ -11,11 +11,11 @@ struct SomaBrainResponse: Codable {
 
 struct SomaMarker: Codable, Identifiable {
     var id: String { name + (unit ?? "") }
-    let name: String
-    let value: String
-    let unit: String?
-    let referenceRange: String?
-    let flag: String? // High, Low, Normal
+    var name: String
+    var value: String
+    var unit: String?
+    var referenceRange: String?
+    var flag: String? // High, Low, Normal
 }
 
 class SomaAPIClient {
@@ -303,7 +303,6 @@ struct AddLabTestView: View {
                 
                 Section {
                     VStack(spacing: 12) {
-                        // Camera
                         Button(action: { isShowingCamera = true }) {
                             Label("Take Photo", systemImage: "camera.fill")
                                 .frame(maxWidth: .infinity)
@@ -311,7 +310,6 @@ struct AddLabTestView: View {
                         .buttonStyle(.bordered)
                         .disabled(isProcessing)
                         
-                        // Multi-photo picker
                         PhotosPicker(selection: $selectedItems, matching: .images) {
                             Label("Scan Photos (Multi)", systemImage: "photo.on.rectangle.angled")
                                 .frame(maxWidth: .infinity)
@@ -319,7 +317,6 @@ struct AddLabTestView: View {
                         .buttonStyle(.bordered)
                         .disabled(isProcessing)
                         
-                        // PDF Picker
                         Button(action: { isImportingPDF = true }) {
                             Label("Import PDF", systemImage: "doc.text.fill")
                                 .frame(maxWidth: .infinity)
@@ -456,11 +453,11 @@ struct AddLabTestView: View {
                 
                 for i in 0..<pageCount {
                     if let page = pdf.page(at: i) {
-                        let pageRect = page.bounds(for: .mediaBox)
-                        let renderer = UIGraphicsImageRenderer(size: pageRect.size)
+                        let bounds = page.bounds(for: .mediaBox)
+                        let renderer = UIGraphicsImageRenderer(size: bounds.size)
                         let img = renderer.image { ctx in
                             UIColor.white.setFill()
-                            ctx.fill(pageRect)
+                            ctx.fill(bounds)
                             page.draw(with: .mediaBox.size)
                         }
                         images.append(img)
