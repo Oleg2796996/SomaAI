@@ -22,6 +22,7 @@ targets:
       - path: Sources/App
       - path: Sources/Config
       - path: Sources/Models
+      - path: Sources/Services
       - path: Sources/Views
     resources:
       - path: LaunchScreen.storyboard

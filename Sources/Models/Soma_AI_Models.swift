@@ -170,8 +170,11 @@ struct Localization {
             "field_date": "Test Date",
             "add_test_title": "New Analysis",
             "test_detail_title": "Test Details",
-            "button_scan": "Scan Document"
-        ],
+            "button_scan": "Scan Document",
+            "button_camera": "Take Photo",
+            "button_photos": "Scan Photos",
+            "button_pdf": "Import PDF",
+            "disclaimer_data_only": "For informational purposes only. This is not a diagnosis or medical advice. Consult a licensed physician."
         "Русский": [
             "profile_title": "Профиль Soma",
             "section_personal": "Личная информация",
@@ -199,8 +202,11 @@ struct Localization {
             "field_date": "Дата анализа",
             "add_test_title": "Новый анализ",
             "test_detail_title": "Детали анализа",
-            "button_scan": "Сканировать документ"
-        ]
+            "button_scan": "Сканировать документ",
+            "button_camera": "Сфотографировать",
+            "button_photos": "Выбрать фото",
+            "button_pdf": "Импорт PDF",
+            "disclaimer_data_only": "Только для информации. Это не диагноз и не медицинская рекомендация. Обратитесь к врачу."
     ]
     
     static func somaTranslate(_ key: String, language: String) -> String {
