@@ -20,7 +20,8 @@ struct SomaMarker: Codable, Identifiable {
 
 class SomaAPIClient {
     static let shared = SomaAPIClient()
-    private let endpoint = "https://ai.wormsoft.ru/api/gpt"
+    private let defaultBaseURL = "https://ai.wormsoft.ru/api/gpt"
+    private let defaultModelName = "wormsoft/code/medium"
 
     private var apiKey: String {
         do {
@@ -30,37 +31,63 @@ class SomaAPIClient {
         }
     }
 
+    private var baseURL: String {
+        let saved = UserDefaults.standard.string(forKey: "soma_api_base_url")
+        return (saved?.isEmpty == false) ? saved! : defaultBaseURL
+    }
+
+    private var modelName: String {
+        let saved = UserDefaults.standard.string(forKey: "soma_api_model_name")
+        return (saved?.isEmpty == false) ? saved! : defaultModelName
+    }
+
+    private var chatEndpoint: String {
+        var url = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while url.hasSuffix("/") { url.removeLast() }
+        if url.hasSuffix("/v1") || url.hasSuffix("/v1/chat") {
+            return url + "/chat/completions"
+        } else if url.contains("wormsoft") || url.contains("/api/gpt") {
+            return url + "/v1/chat/completions"
+        } else {
+            return url + "/v1/chat/completions"
+        }
+    }
+
     func structureText(_ text: String) async throws -> [SomaMarker] {
         guard !apiKey.isEmpty else {
             throw NSError(domain: "SomaAPI", code: -2, userInfo: [NSLocalizedDescriptionKey: "API key not configured. Go to Settings → API Key."])
         }
-        
-        var request = URLRequest(url: URL(string: endpoint)!)
+
+        guard let url = URL(string: chatEndpoint) else {
+            throw NSError(domain: "SomaAPI", code: -3, userInfo: [NSLocalizedDescriptionKey: "Invalid API endpoint: \(chatEndpoint)"])
+        }
+
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        
+
         let messages: [[String: String]] = [
             ["role": "system", "content": "You extract medical lab markers from raw OCR text and return ONLY a JSON object with a 'markers' array. Each marker has: name, value, unit (optional), referenceRange (optional), flag (optional: High/Low/Normal). No markdown, no explanations."],
             ["role": "user", "content": text]
         ]
         let body: [String: Any] = [
-            "model": "wormsoft/code/medium",
+            "model": modelName,
             "messages": messages,
             "temperature": 0.1
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NSError(domain: "SomaAPI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
         }
-        
+
         guard httpResponse.statusCode == 200 else {
             throw NSError(domain: "SomaAPI", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(httpResponse.statusCode)"])
         }
-        
+
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let first = choices.first,
@@ -69,7 +96,7 @@ class SomaAPIClient {
               let contentData = content.data(using: .utf8) else {
             throw NSError(domain: "SomaAPI", code: 0, userInfo: [NSLocalizedDescriptionKey: "Could not parse API response"])
         }
-        
+
         let decoded = try JSONDecoder().decode(SomaBrainResponse.self, from: contentData)
         return decoded.markers
     }
@@ -196,7 +223,7 @@ struct ProfileView: View {
                         ForEach(languages, id: \.self) { Text($0) }
                     }
 
-                    NavigationLink(destination: APIKeySettingsView()) {
+                    NavigationLink(destination: APIKeySettingsView(onSave: { settingsRefresh = UUID() })) {
                         HStack {
                             Text("Soma API Key")
                             Spacer()
@@ -223,11 +250,13 @@ struct ProfileView: View {
                 }
             }
             .navigationTitle(Localization.somaTranslate("profile_title", language: language))
+            .id(settingsRefresh)
             .onAppear(perform: loadProfile)
         }
     }
     
     @State private var isPressed = false
+    @State private var settingsRefresh = UUID()
     
     private func loadProfile() {
         if let profile = profiles.first {

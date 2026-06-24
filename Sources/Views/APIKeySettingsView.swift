@@ -2,8 +2,11 @@ import SwiftUI
 
 struct APIKeySettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    var onSave: (() -> Void)? = nil
 
     @State private var apiKey: String = ""
+    @State private var baseURL: String = ""
+    @State private var modelName: String = ""
     @State private var statusMessage: String = ""
     @State private var isSuccess: Bool = false
     @State private var showAlert = false
@@ -15,7 +18,14 @@ struct APIKeySettingsView: View {
                     SecureField("Enter API Key", text: $apiKey)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Text("Your key is stored securely in the iOS Keychain and never leaves this device except in API calls to Wormsoft.")
+                    TextField("Base URL", text: $baseURL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    TextField("Model Name", text: $modelName)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("Your key is stored securely in the iOS Keychain. Base URL and model name are saved in UserDefaults. They are only used for API calls.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -24,8 +34,11 @@ struct APIKeySettingsView: View {
                     Button("Save Key") {
                         do {
                             try KeychainHelper.shared.save(apiKey)
-                            statusMessage = "API key saved successfully."
+                            UserDefaults.standard.set(baseURL, forKey: "soma_api_base_url")
+                            UserDefaults.standard.set(modelName, forKey: "soma_api_model_name")
+                            statusMessage = "API settings saved successfully."
                             isSuccess = true
+                            onSave?()
                         } catch {
                             statusMessage = "Failed to save: \(error.localizedDescription)"
                             isSuccess = false
@@ -39,6 +52,10 @@ struct APIKeySettingsView: View {
                         do {
                             try KeychainHelper.shared.delete()
                             apiKey = ""
+                            baseURL = ""
+                            modelName = ""
+                            UserDefaults.standard.removeObject(forKey: "soma_api_base_url")
+                            UserDefaults.standard.removeObject(forKey: "soma_api_model_name")
                             statusMessage = "API key deleted."
                             isSuccess = true
                         } catch {
@@ -72,6 +89,8 @@ struct APIKeySettingsView: View {
                 } catch {
                     apiKey = ""
                 }
+                baseURL = UserDefaults.standard.string(forKey: "soma_api_base_url") ?? ""
+                modelName = UserDefaults.standard.string(forKey: "soma_api_model_name") ?? ""
             }
             .alert(isPresented: $showAlert) {
                 Alert(title: Text(isSuccess ? "Success" : "Error"),
