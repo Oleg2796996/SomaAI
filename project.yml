@@ -20,6 +20,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources/App
+      - path: Sources/Config
       - path: Sources/Models
       - path: Sources/Views
     resources:
