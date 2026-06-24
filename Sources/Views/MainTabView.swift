@@ -453,8 +453,13 @@ struct AddLabTestView: View {
                 
                 for i in 0..<pageCount {
                     if let page = pdf.page(at: i) {
+                        // FIX: Explicitly extract width and height from CGRect bounds
                         let bounds = page.bounds(for: .mediaBox)
-                        let renderer = UIGraphicsImageRenderer(size: bounds.size)
+                        let width = bounds.width
+                        let height = bounds.height
+                        let pageSize = CGSize(width: width, height: height)
+                        
+                        let renderer = UIGraphicsImageRenderer(size: pageSize)
                         let img = renderer.image { ctx in
                             UIColor.white.setFill()
                             ctx.fill(bounds)
