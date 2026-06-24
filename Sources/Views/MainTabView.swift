@@ -453,18 +453,10 @@ struct AddLabTestView: View {
                 
                 for i in 0..<pageCount {
                     if let page = pdf.page(at: i) {
-                        // FIX: Explicitly extract width and height from CGRect bounds
+                        // Use built-in PDFPage thumbnail renderer for maximum compatibility
                         let bounds = page.bounds(for: .mediaBox)
-                        let width = bounds.width
-                        let height = bounds.height
-                        let pageSize = CGSize(width: width, height: height)
-                        
-                        let renderer = UIGraphicsImageRenderer(size: pageSize)
-                        let img = renderer.image { ctx in
-                            UIColor.white.setFill()
-                            ctx.fill(bounds)
-                            page.draw(with: .mediaBox.size)
-                        }
+                        let pageSize = CGSize(width: bounds.width, height: bounds.height)
+                        let img = page.thumbnail(of: pageSize, for: .mediaBox)
                         images.append(img)
                     }
                 }
