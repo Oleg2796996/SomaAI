@@ -281,12 +281,14 @@ struct AddLabTestView: View {
                 pendingMarkers = markers
                 showingVerification = true
             } catch {
-                // Instead of just showing an error, we let the user proceed to verification
-                // with an empty list, providing a more helpful message.
+                // DIAGNOSTIC MODE: log the error into recognizedText for the user to see in Debug view
+                let errorMsg = "API Error: \(error.localizedDescription)"
                 apiError = "Soma AI couldn't fully automate the analysis. You can still verify the data and add markers manually."
                 showingErrorAlert = true
                 
-                // We still open verification so they can fix it manually
+                // Append the raw error to the debug text area
+                recognizedText = "--- SERVER ERROR ---\n\(errorMsg)\n\n--- ORIGINAL OCR ---\n" + recognizedText
+                
                 pendingMarkers = []
                 showingVerification = true
             }
