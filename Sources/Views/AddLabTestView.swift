@@ -143,6 +143,9 @@ struct AddLabTestView: View {
             } message: { error in
                 Text(error)
             }
+            .onTapGesture {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
         }
     }
 
@@ -275,19 +278,15 @@ struct AddLabTestView: View {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
 
-            // Heuristic: if the line is very short or ends with a colon/dash, 
-            // it might be a label for the next line.
             if trimmed.count < 30 && (trimmed.hasSuffix(":") || trimmed.hasSuffix("-") || 
                !trimmed.contains(where: { $0.isNumber })) {
                 currentBuffer += trimmed + " "
             } else {
-                // This line likely contains the value. Append buffer if exists.
                 normalizedLines.append((currentBuffer + trimmed).trimmingCharacters(in: .whitespaces))
                 currentBuffer = ""
             }
         }
         
-        // Add any remaining buffer
         if !currentBuffer.isEmpty {
             normalizedLines.append(currentBuffer.trimmingCharacters(in: .whitespaces))
         }
@@ -306,7 +305,6 @@ struct AddLabTestView: View {
         isProcessing = true
         Task {
             do {
-                // Apply normalization before sending to API
                 let normalizedText = normalizeOCRText(recognizedText)
                 let markers = try await SomaAPIClient.shared.structureText(normalizedText)
                 pendingMarkers = markers
