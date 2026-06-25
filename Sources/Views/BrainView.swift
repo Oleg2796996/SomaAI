@@ -3,7 +3,7 @@ import SwiftData
 
 struct BrainView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \\LabTest.date, order: .reverse) private var tests: [LabTest]
+    @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
     @Query private var userProfiles: [UserProfile]
 
     @State private var messages: [ChatMessage] = []
@@ -15,7 +15,7 @@ struct BrainView: View {
     @FocusState private var isFocused: Bool
 
     private var currentLanguage: String {
-        userProfiles.first?.preferredLanguage ?? \"English\"
+        userProfiles.first?.preferredLanguage ?? "English"
     }
 
     var body: some View {
@@ -47,7 +47,7 @@ struct BrainView: View {
 
                 VStack(spacing: 8) {
                     HStack(spacing: 12) {
-                        TextField(Localization.somaTranslate(\"brain_input_placeholder\", language: currentLanguage), text: $inputText, axis: .vertical)
+                        TextField(Localization.somaTranslate("brain_input_placeholder", language: currentLanguage), text: $inputText, axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                             .disabled(isLoading)
                             .focused($isFocused)
@@ -57,14 +57,14 @@ struct BrainView: View {
                                 ProgressView()
                                     .progressViewStyle(.circular)
                             } else {
-                                Image(systemName: \"arrow.up.circle.fill\")
+                                Image(systemName: "arrow.up.circle.fill")
                                     .font(.title2)
                             }
                         }
                         .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                     }
 
-                    Text(Localization.somaTranslate(\"brain_disclaimer_footer\", language: currentLanguage))
+                    Text(Localization.somaTranslate("brain_disclaimer_footer", language: currentLanguage))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -72,16 +72,16 @@ struct BrainView: View {
                 .padding()
                 .background(.ultraThinMaterial)
             }
-            .navigationTitle(\"Soma Brain\")
+            .navigationTitle("Soma Brain")
             .navigationBarTitleDisplayMode(.inline)
-            .alert(\"Brain Error\", isPresented: $showingError, presenting: errorMessage) { _ in
-                Button(\"OK\") {}
+            .alert("Brain Error", isPresented: $showingError, presenting: errorMessage) { _ in
+                Button("OK") {}
             } message: { error in
                 Text(error)
             }
             .onAppear {
                 if messages.isEmpty {
-                    messages.append(ChatMessage(role: .assistant, text: Localization.somaTranslate(\"brain_welcome_message\", language: currentLanguage)))
+                    messages.append(ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: currentLanguage)))
                 }
             }
         }
@@ -125,8 +125,10 @@ struct BrainView: View {
         for test in tests {
             for marker in test.markers {
                 let markerKey = marker.name.lowercased()
-                if lowercased.contains(markerKey) || markerKey.split(separator: \" \").contains(where: { lowercased.contains(String($0)) }) {
-                    let key = \"\\(test.testName) — \\(marker.name)\"\n                    fragments[key] = \"\\(marker.value) \\(marker.unit ?? \"\") (ref: \\(marker.referenceRange ?? \"n/a\"))\"\n                }
+                if lowercased.contains(markerKey) || markerKey.split(separator: " ").contains(where: { lowercased.contains(String($0)) }) {
+                    let key = "\(test.testName) — \(marker.name)"
+                    fragments[key] = "\(marker.value) \(marker.unit ?? "") (ref: \(marker.referenceRange ?? "n/a"))"
+                }
             }
         }
 
@@ -142,7 +144,9 @@ struct ChatMessage: Identifiable {
 
     var sourceLabel: String {
         switch role {
-        case .user: return \"You\"\n        case .assistant: return source == .cloud ? \"Soma Brain ☁️\" : \"Soma Brain 📱\"\n        }
+        case .user: return "You"
+        case .assistant: return source == .cloud ? "Soma Brain ☁️" : "Soma Brain 📱"
+        }
     }
 }
 
