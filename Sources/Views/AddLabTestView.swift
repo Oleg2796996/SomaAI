@@ -281,8 +281,14 @@ struct AddLabTestView: View {
                 pendingMarkers = markers
                 showingVerification = true
             } catch {
-                apiError = error.localizedDescription
+                // Instead of just showing an error, we let the user proceed to verification
+                // with an empty list, providing a more helpful message.
+                apiError = "Soma AI couldn't fully automate the analysis. You can still verify the data and add markers manually."
                 showingErrorAlert = true
+                
+                // We still open verification so they can fix it manually
+                pendingMarkers = []
+                showingVerification = true
             }
             isProcessing = false
         }
