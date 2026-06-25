@@ -4,15 +4,18 @@ import SwiftData
 struct BrainView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
+    @Query private var userProfiles: [UserProfile]
 
-    @State private var messages: [ChatMessage] = [
-        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: "English"))
-    ]
+    @State private var messages: [ChatMessage] = []
     @State private var inputText: String = ""
     @State private var isLoading = false
     @State private var scrollTarget: UUID?
     @State private var errorMessage: String? = nil
     @State private var showingError = false
+
+    private var currentLanguage: String {
+        userProfiles.first?.preferredLanguage ?? "English"
+    }
 
     var body: some View {
         NavigationStack {
@@ -70,6 +73,11 @@ struct BrainView: View {
                 Button("OK") {}
             } message: { error in
                 Text(error)
+            }
+            .onAppear {
+                if messages.isEmpty {
+                    messages.append(ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: currentLanguage)))
+                }
             }
         }
     }
