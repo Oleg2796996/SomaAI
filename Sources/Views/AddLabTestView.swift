@@ -266,6 +266,35 @@ struct AddLabTestView: View {
         }
     }
 
+    private func normalizeOCRText(_ text: String) -> String {
+        let lines = text.components(separatedBy: .newlines)
+        var normalizedLines: [String] = []
+        var currentBuffer = ""
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            // Heuristic: if the line is very short or ends with a colon/dash, 
+            // it might be a label for the next line.
+            if trimmed.count < 30 && (trimmed.hasSuffix(":") || trimmed.hasSuffix("-") || 
+               !trimmed.contains(where: { $0.isNumber })) {
+                currentBuffer += trimmed + " "
+            } else {
+                // This line likely contains the value. Append buffer if exists.
+                normalizedLines.append((currentBuffer + trimmed).trimmingCharacters(in: .whitespaces))
+                currentBuffer = ""
+            }
+        }
+        
+        // Add any remaining buffer
+        if !currentBuffer.isEmpty {
+            normalizedLines.append(currentBuffer.trimmingCharacters(in: .whitespaces))
+        }
+
+        return normalizedLines.joined(separator: "\n")
+    }
+
     private func processAndVerify() {
         isPressed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -277,16 +306,16 @@ struct AddLabTestView: View {
         isProcessing = true
         Task {
             do {
-                let markers = try await SomaAPIClient.shared.structureText(recognizedText)
+                // Apply normalization before sending to API
+                let normalizedText = normalizeOCRText(recognizedText)
+                let markers = try await SomaAPIClient.shared.structureText(normalizedText)
                 pendingMarkers = markers
                 showingVerification = true
             } catch {
-                // DIAGNOSTIC MODE: log the error into recognizedText for the user to see in Debug view
                 let errorMsg = "API Error: \(error.localizedDescription)"
                 apiError = "Soma AI couldn't fully automate the analysis. You can still verify the data and add markers manually."
                 showingErrorAlert = true
                 
-                // Append the raw error to the debug text area
                 recognizedText = "--- SERVER ERROR ---\n\(errorMsg)\n\n--- ORIGINAL OCR ---\n" + recognizedText
                 
                 pendingMarkers = []
