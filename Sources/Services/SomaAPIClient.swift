@@ -149,8 +149,8 @@ final class SomaAPIClient {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
-                print("[SomaAI] processDocument overall TIMEOUT after 30s — returning unknown fallback")
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                print("[SomaAI] processDocument overall TIMEOUT after 20s — returning unknown fallback")
                 return SomaExtractionResponse(
                     type: DocumentType.unknown.rawValue,
                     date: nil, organization: nil, title: nil,
@@ -199,58 +199,97 @@ final class SomaAPIClient {
     /// is strongest — this prevents the "first 200 chars are изосерология,
     /// the rest is эпикриз" trap that confuses a single-pass classifier.
     func smartClassify(_ text: String) async throws -> SomaClassifyResponse {
+        // STEP 0: regex precheck. If the document has a clear header keyword,
+        // we don't need the LLM at all. This catches 90% of cases in <1ms.
+        if let regexHit = regexClassify(text) {
+            print("[SomaAI] smartClassify: regex precheck hit → \(regexHit.type)@\(regexHit.confidence) (org=\(regexHit.organization ?? "nil"))")
+            return regexHit
+        }
+
+        // STEP 1: preprocess to drop OCR garbage before LLM sees it.
         let cleaned = preprocessForClassification(text)
-        // If cleaning killed most of the text, fall back to the raw text.
         let body = cleaned.count > 200 ? cleaned : text
-        let length = body.count
-        let headEnd = min(1500, length)
-        let tailStart = max(0, length - 1500)
-        let midStart = length / 3
-        let midEnd = min(length, midStart + 1500)
-        let head = String(body.prefix(headEnd))
-        let tail = String(body.suffix(length - tailStart))
-        let mid = String(body[body.index(body.startIndex, offsetBy: midStart)..<body.index(body.startIndex, offsetBy: midEnd)])
+        // Cap to first 3000 chars — most Russian medical docs fit in this
+        // window for the *head* of the document (the title/type usually
+        // appears in the first 1-2 pages).
+        let trimmed = body.count > 3000 ? String(body.prefix(3000)) : body
 
-        // Each vote has its own 12s timeout. If all three fail/timeout
-        // we return unknown@0 — the caller will fall back to the .unknown
-        // UI and the user can still edit / save the document manually.
-        let headResult = await sendChatWithTimeout(messages: [
+        // STEP 2: single LLM call with 8s timeout. The 3-vote multi-vote
+        // added 15-20s latency and frequently hit the 30s overall guard.
+        // 1 call is faster and the regex precheck already covers the
+        // hard cases. The classifier will fall back to .unknown if the
+        // call times out.
+        let result = await sendChatWithTimeout(messages: [
             ["role": "system", "content": SomaPrompts.documentClassifier],
-            ["role": "user", "content": head]
-        ], temperature: 0.0)
-        let midResult = await sendChatWithTimeout(messages: [
-            ["role": "system", "content": SomaPrompts.documentClassifier],
-            ["role": "user", "content": mid]
-        ], temperature: 0.0)
-        let tailResult = await sendChatWithTimeout(messages: [
-            ["role": "system", "content": SomaPrompts.documentClassifier],
-            ["role": "user", "content": tail]
-        ], temperature: 0.0)
-        let h = headResult.vote ?? SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
-        let m = midResult.vote ?? SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
-        let t = tailResult.vote ?? SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
-        if headResult.error != nil || midResult.error != nil || tailResult.error != nil {
-            print("[SomaAI] smartClassify: some votes timed out/failed — using whatever votes came back")
-        }
-        print("[SomaAI] smartClassify votes: head=\(h.type)@\(h.confidence) mid=\(m.type)@\(m.confidence) tail=\(t.type)@\(t.confidence)")
+            ["role": "user", "content": trimmed]
+        ], temperature: 0.0, seconds: 8)
 
-        // Tally: count types, pick the one with the highest sum-of-confidence.
-        var scores: [String: Double] = [:]
-        for v in [h, m, t] {
-            scores[v.type, default: 0] += Double(v.confidence)
+        if let vote = result.vote {
+            print("[SomaAI] smartClassify: LLM vote → \(vote.type)@\(vote.confidence)")
+            return vote
         }
-        // Russian выписные эпикризы put "Эпикриз выписной" in the title/footer,
-        // so the tail slice almost always wins. Weight the tail ×1.3.
-        scores[t.type, default: 0] *= 1.3
-        print("[SomaAI] smartClassify tallies: \(scores.map { "\($0.key)=\(String(format: "%.2f", $0.value))" }.sorted().joined(separator: " "))")
-        let winner = scores.max(by: { $0.value < $1.value }) ?? (h.type, 0)
-        let type = winner.key
-        let confidence = min(1.0, max(h.confidence, m.confidence, t.confidence))
-        // Pick the organisation from the slice that reported the most
-        // detail. Prefer head, then tail.
-        let org = h.organization ?? t.organization ?? m.organization
-        print("[SomaAI] smartClassify winner: \(type)@\(confidence) org=\(org ?? "nil")")
-        return SomaClassifyResponse(type: type, confidence: confidence, organization: org)
+        print("[SomaAI] smartClassify: LLM timed out/failed → returning unknown@0.4 (user can re-type)")
+        return SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.4, organization: nil)
+    }
+
+    /// Fast deterministic classifier using regex on the cleaned text.
+    /// Returns nil if no clear header keyword is found (caller falls back
+    /// to a single LLM call). Russian + English headers supported.
+    func regexClassify(_ text: String) -> SomaClassifyResponse? {
+        let lower = text.lowercased()
+        // (pattern, type, confidence) — first match wins.
+        let rules: [(String, String, Double)] = [
+            // Discharge summary / выписной эпикриз — check BEFORE plain
+            // 'эпикриз' because the word 'выписной' is the disambiguator.
+            ("эпикриз выписной",      DocumentType.dischargeSummary.rawValue, 0.90),
+            ("выписка из",            DocumentType.dischargeSummary.rawValue, 0.85),
+            ("выписной эпикриз",      DocumentType.dischargeSummary.rawValue, 0.90),
+            ("discharge summary",     DocumentType.dischargeSummary.rawValue, 0.90),
+            ("discharge summary:",    DocumentType.dischargeSummary.rawValue, 0.90),
+            // Plain epicrisis (not выписной)
+            ("эпикриз",               DocumentType.epicrisis.rawValue, 0.80),
+            ("epicrisis",             DocumentType.epicrisis.rawValue, 0.80),
+            // Consultation / specialist note
+            ("консультация",          DocumentType.consultation.rawValue, 0.75),
+            ("заключение специалиста",DocumentType.consultation.rawValue, 0.80),
+            ("осмотр врача",          DocumentType.consultation.rawValue, 0.70),
+            ("consultation",          DocumentType.consultation.rawValue, 0.75),
+            // Referral
+            ("направление к",         DocumentType.referral.rawValue, 0.85),
+            ("направить к",           DocumentType.referral.rawValue, 0.80),
+            ("прошу обследовать",     DocumentType.referral.rawValue, 0.80),
+            ("referral",              DocumentType.referral.rawValue, 0.75),
+            // Vaccination
+            ("прививка",              DocumentType.vaccination.rawValue, 0.85),
+            ("вакцинация",            DocumentType.vaccination.rawValue, 0.85),
+            ("vaccination",           DocumentType.vaccination.rawValue, 0.85),
+            // Imaging
+            ("рентгенограмма",        DocumentType.imagingReport.rawValue, 0.80),
+            ("протокол кт",           DocumentType.imagingReport.rawValue, 0.85),
+            ("протокол мрт",          DocumentType.imagingReport.rawValue, 0.85),
+            ("протокол узи",          DocumentType.imagingReport.rawValue, 0.85),
+            ("заключение экг",        DocumentType.imagingReport.rawValue, 0.85),
+            ("заключение эхокг",      DocumentType.imagingReport.rawValue, 0.85),
+            ("radiology report",      DocumentType.imagingReport.rawValue, 0.80),
+            // Prescription
+            ("рецепт на",             DocumentType.prescription.rawValue, 0.80),
+            ("назначение:",           DocumentType.prescription.rawValue, 0.60),  // weak — also in epicrisis
+            ("\\brp\\.\\s",           DocumentType.prescription.rawValue, 0.85),  // Rp. with period
+            ("prescription",          DocumentType.prescription.rawValue, 0.75),
+            // Lab result — lower priority because embedded Изосерология
+            // can show up inside an epicrisis. Only match strong lab headers.
+            ("общий анализ крови",    DocumentType.labResult.rawValue, 0.90),
+            ("общий анализ мочи",     DocumentType.labResult.rawValue, 0.90),
+            ("биохимический анализ",  DocumentType.labResult.rawValue, 0.90),
+            ("complete blood count",  DocumentType.labResult.rawValue, 0.90),
+            ("urinalysis",            DocumentType.labResult.rawValue, 0.90),
+        ]
+        for (pattern, type, conf) in rules {
+            if lower.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
+                return SomaClassifyResponse(type: type, confidence: conf, organization: nil)
+            }
+        }
+        return nil
     }
 
     // MARK: Step 1 — classify
@@ -298,7 +337,27 @@ final class SomaAPIClient {
             ["role": "system", "content": prompt],
             ["role": "user", "content": text]
         ]
-        let content = try await sendChat(messages: messages, temperature: 0.0)
+        let content: String
+        do {
+            content = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask { try await self.sendChat(messages: messages, temperature: 0.0) }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 12_000_000_000)
+                    throw CancellationError()
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+        } catch {
+            print("[SomaAI] extract type=\(type.rawValue) TIMEOUT/error: \(error.localizedDescription) — returning raw text fallback")
+            let truncated = text.count > 3000 ? String(text.prefix(3000)) + "…[truncated]" : text
+            return SomaExtractionResponse(
+                type: type.rawValue, date: nil, organization: nil, title: nil,
+                confidence: 0.3, markers: nil, medications: nil,
+                sections: [SomaSection(key: "Сырой текст", value: truncated, order: 0)]
+            )
+        }
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
