@@ -65,10 +65,20 @@ final class LabMarker {
     var flag: String?
     var isCritical: Bool = false
     var labStandardId: String?
-    init(name: String, value: String, unit: String? = nil, loincCode: String? = nil, isCritical: Bool = false) {
+    init(
+        name: String,
+        value: String,
+        unit: String? = nil,
+        referenceRange: String? = nil,
+        flag: String? = nil,
+        loincCode: String? = nil,
+        isCritical: Bool = false
+    ) {
         self.name = name
         self.value = value
         self.unit = unit
+        self.referenceRange = referenceRange
+        self.flag = flag
         self.loincCode = loincCode
         self.isCritical = isCritical
     }

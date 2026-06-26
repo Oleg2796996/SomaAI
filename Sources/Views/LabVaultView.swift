@@ -20,12 +20,15 @@ struct LabVaultView: View {
                 } else {
                     ForEach(tests) { test in
                         NavigationLink(destination: LabTestDetailView(test: test, language: language)) {
-                            VStack(alignment: .leading) {
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text(test.testName)
                                     .font(.headline)
                                 Text(test.date, style: .date)
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
+                                Text("\(test.markers.count) marker\(test.markers.count == 1 ? "" : "s")")
+                                    .font(.caption)
+                                    .foregroundColor(test.markers.isEmpty ? .red : .secondary)
                             }
                         }
                     }

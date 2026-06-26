@@ -292,13 +292,25 @@ struct AddLabTestView: View {
         let newTest = LabTest(date: date, provider: provider, testName: testName)
 
         for m in markers {
-            let marker = LabMarker(name: m.name, value: m.value, unit: m.unit)
-            marker.referenceRange = m.referenceRange
-            marker.flag = m.flag
+            let marker = LabMarker(
+                name: m.name,
+                value: m.value,
+                unit: m.unit,
+                referenceRange: m.referenceRange,
+                flag: m.flag
+            )
             newTest.markers.append(marker)
         }
 
         modelContext.insert(newTest)
+        do {
+            try modelContext.save()
+            print("[SomaAI] Saved LabTest '\(newTest.testName)' with \(newTest.markers.count) markers")
+        } catch {
+            apiError = "Save failed: \(error.localizedDescription)"
+            showingErrorAlert = true
+            print("[SomaAI] Save error: \(error)")
+        }
         dismiss()
     }
 }
