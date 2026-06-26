@@ -363,14 +363,10 @@ final class SomaAPIClient {
                 return first
             }
         } catch {
-            print("[SomaAI] extract type=\(type.rawValue) TIMEOUT/error: \(error.localizedDescription) — returning raw text fallback")
-            let truncated = text.count > 3000 ? String(text.prefix(3000)) + "…[truncated]" : text
-            return SomaExtractionResponse(
-                type: type.rawValue, date: nil, organization: nil, title: nil,
-                confidence: 0.3, markers: nil, medications: nil,
-                sections: [SomaSection(key: "Сырой текст", value: truncated, order: 0)]
-            )
-        }
+            print("[SomaAI] extract type=\(type.rawValue) LLM TIMEOUT/error: \(error.localizedDescription) — falling back to LocalExtractor")
+            let local = LocalExtractor.extract(text, type: type)
+            print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
+            return local
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
@@ -394,13 +390,14 @@ final class SomaAPIClient {
                 return repaired
             }
         }
-        // Both attempts failed — fall back to raw text so the user can save.
-        print("[SomaAI] extract decode failed for type \(type.rawValue). Raw content head: \(content.prefix(2000))")
-        // Fallback: do NOT discard the OCR. Return the raw text inside
-        // a single section so the verification UI can show it and the
-        // user can manually re-classify or re-extract. confidence=0.3
-        // is high enough to not trigger the 'LLM not confident'
-        // warning but low enough that the user knows it was a fallback.
+        // Both attempts failed — try local regex first, then raw text.
+        print("[SomaAI] extract decode failed for type \(type.rawValue) — falling back to LocalExtractor")
+        let local = LocalExtractor.extract(text, type: type)
+        print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
+        if local.sections?.isEmpty == false || local.markers?.isEmpty == false || local.medications?.isEmpty == false {
+            return local
+        }
+        // Local also found nothing — return raw text so user can edit.
         let truncated = text.count > 3000 ? String(text.prefix(3000)) + "…[truncated]" : text
         return SomaExtractionResponse(
             type: type.rawValue, date: nil, organization: nil, title: nil,
