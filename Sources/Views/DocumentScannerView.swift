@@ -5,7 +5,7 @@ import VisionKit
 /// native scanner does auto-crop, perspective correction and multi-page
 /// capture for free. Replaces the bare UIImagePickerController which
 /// had none of those.
-struct DocumentScannerView: UIViewControllerRepresentable {
+public struct DocumentScannerView: UIViewControllerRepresentable {
     @Binding var scannedImages: [UIImage]
     var onError: (Error) -> Void = { _ in }
     var onCancel: () -> Void = {}

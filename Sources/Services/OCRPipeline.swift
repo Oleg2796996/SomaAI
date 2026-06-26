@@ -7,7 +7,7 @@ import UIKit
 /// correction; if that returns poor quality, we retry with binarisation
 /// and language correction off. Used by `AddLabTestView` for both
 /// camera shots and PDF page renders.
-struct OCRResult {
+public struct OCRResult {
     let text: String
     let quality: OCRQuality
     /// Average confidence across all lines, 0.0–1.0.
@@ -15,7 +15,7 @@ struct OCRResult {
     let pageCount: Int
 }
 
-enum OCRQuality {
+public enum OCRQuality {
     case good, medium, poor
     /// Score used to surface the quality in the verification header.
     var label: String {
@@ -27,7 +27,7 @@ enum OCRQuality {
     }
 }
 
-final class OCRPipeline {
+public final class OCRPipeline {
     static let shared = OCRPipeline()
     private let pre = ImagePreprocessor.shared
 

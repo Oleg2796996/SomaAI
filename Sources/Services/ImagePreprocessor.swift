@@ -5,8 +5,8 @@ import CoreImage.CIFilterBuiltins
 /// Core Image pre-processor for medical documents. Runs BEFORE OCR
 /// to lift text out of bad lighting, perspective skew and low contrast.
 /// All operations are non-mutating; the original UIImage is preserved.
-final class ImagePreprocessor {
-    static let shared = ImagePreprocessor()
+public final class ImagePreprocessor {
+    public static let shared = ImagePreprocessor()
     private let context = CIContext(options: [.useSoftwareRenderer: false])
 
     /// Auto-adjust exposure and contrast. First step in the OCR pipeline.
