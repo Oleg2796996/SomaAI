@@ -610,7 +610,9 @@ Return ONLY this JSON (no markdown):
 Rules:
   - Include EVERY drug you can see, even if dose is missing (use null for unknown fields).
   - Do NOT include lab values or diagnoses here.
-  - If the OCR is too short or has no drug names, return "medications": [] and confidence=0.2.
+  - If you find drug names in the text, ALWAYS return them. Returning an empty medications
+    array when names are visible is a bug. Use null for fields you cannot read.
+  - If the OCR is genuinely too short or has no drug names, return "medications": [] and confidence=0.2.
   - Scan the WHOLE text, not just the first lines.
 """
 
@@ -629,6 +631,15 @@ Return ONLY this JSON (no markdown):
   ]
 }
 
+CRITICAL: Never return an empty sections array if the OCR text is substantial (>200 chars).
+If the document is a hybrid (e.g. выписной эпикриз with embedded Изосерология block, or a
+clinical narrative that starts with a lab-result header), ALWAYS extract the clinical
+content into the matching section keys below. Embedded lab values, blood-group data, or
+imaging snippets belong in a 'Лабораторные данные' / 'Lab data' sub-section, NOT skipped.
+If you genuinely cannot find any of the listed sections, put the entire visible clinical
+text into one 'Детали' / 'Details' section so the user can save the document. Returning
+sections:[] for a multi-page document is a bug.
+
 Common section keys (use these exact names when present, otherwise the original heading):
   Жалобы / Complaints
   Анамнез / Anamnesis
@@ -642,13 +653,14 @@ Common section keys (use these exact names when present, otherwise the original 
   Операция / Surgery / Operation
   Рекомендации / Recommendations
   Вывод / Conclusion
+  Лабораторные данные / Lab data
+  Детали / Details
 
 Rules:
   - Include a section ONLY if there is actual text for it. Skip empty ones.
   - If a section name contains line breaks or newlines, collapse them into spaces.
-  - If the OCR is too short, return "sections": [] and confidence=0.2.
   - 'order' is the reading order: 0, 1, 2, ...
-  - Scan the WHOLE text.
+  - Scan the WHOLE text. Do not stop at the first sub-section.
 """
 
     /// Step 2 — referral: target + required tests.
@@ -667,6 +679,12 @@ Return ONLY this JSON (no markdown):
     {"key": "Необходимые обследования (required tests)", "value": "list of tests or examination", "order": 2}
   ]
 }
+
+CRITICAL: Never return empty sections for a document with >200 chars of text.
+If you cannot find a 'Куда' / 'Цель' section, but the text contains visible
+referral context (clinic name, doctor name, symptoms), put that text into a
+'Детали' / 'Details' section so the user can still save the document. Empty
+sections on a real referral is a bug.
 
 If a section is missing, omit it. If OCR is too short, return empty sections and confidence=0.2.
 """
@@ -688,6 +706,11 @@ Return ONLY this JSON (no markdown):
     {"key": "Заключение (conclusion)", "value": "final conclusion", "order": 3}
   ]
 }
+
+CRITICAL: Never return empty sections for a document with >200 chars of text.
+If you cannot find the modality or conclusion, but the text describes a
+radiology / imaging study, put the visible text into a 'Детали' / 'Details'
+section so the user can still save the document.
 
 If a section is missing, omit it. If OCR is too short, return empty sections and confidence=0.2.
 """
