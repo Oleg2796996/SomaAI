@@ -166,7 +166,9 @@ struct LocalExtractor {
             if trimmed.hasSuffix(":") { continue }       // header
             if trimmed.allSatisfy({ "0123456789.,-+()/- ".contains($0) }) { continue } // pure numeric
             // Split by 2+ spaces or tab (medical tables are usually aligned).
-            let tokens = trimmed.components(separatedBy: NSRegularExpression(pattern: "[\\s\\t]+"))
+            let tokens = trimmed.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+                .split(separator: " ")
+                .map(String.init)
                 .filter { !$0.isEmpty }
             if tokens.count < 2 { continue }
             // Find first numeric token (value).
@@ -227,7 +229,8 @@ struct LocalExtractor {
     // MARK: - Paragraph splitter for unknown
 
     static func splitIntoParagraphs(_ text: String) -> [SomaSection] {
-        let paragraphs = text.components(separatedBy: NSRegularExpression(pattern: "\\n\\s*\\n"))
+        let paragraphs = text.replacingOccurrences(of: #"\n\s*\n"#, with: "<<PARA>>", options: .regularExpression)
+            .components(separatedBy: "<<PARA>>")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && $0.count > 10 }
         return paragraphs.enumerated().map { (i, p) in
