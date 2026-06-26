@@ -149,6 +149,7 @@ struct BrainView: View {
         var anyMatch = false
 
         for test in tests {
+            // --- Lab markers (existing) ---
             for marker in test.markers {
                 let nameLower = marker.name.lowercased()
                 let nameWords = nameLower.split(separator: " ")
@@ -167,9 +168,38 @@ struct BrainView: View {
                     fragments[key] = line
                 }
             }
+            // --- Prescriptions (new) ---
+            for med in test.prescriptions {
+                let nameLower = med.name.lowercased()
+                if nameLower.isEmpty { continue }
+                let hit = lowercased.contains(nameLower)
+                    || nameLower.split(separator: " ").contains(where: { lowercased.contains(String($0)) })
+                if hit {
+                    anyMatch = true
+                    let key = "\(test.testName) — \(med.name)"
+                    var line = "Medication"
+                    if let d = med.dose, !d.isEmpty { line += " \(d)" }
+                    if let f = med.frequency, !f.isEmpty { line += ", \(f)" }
+                    if let du = med.duration, !du.isEmpty { line += ", \(du)" }
+                    fragments[key] = line
+                }
+            }
+            // --- Structured fields (epicrisis / consultation / unknown) ---
+            for field in test.structuredFields {
+                let keyLower = field.key.lowercased()
+                let valueLower = field.value.lowercased()
+                let hit = lowercased.contains(keyLower)
+                    || lowercased.contains(valueLower)
+                    || keyLower.split(separator: " ").contains(where: { lowercased.contains(String($0)) })
+                if hit {
+                    anyMatch = true
+                    let key = "\(test.testName) — \(field.key)"
+                    fragments[key] = field.value
+                }
+            }
         }
 
-        // Fallback: if user asks a general question (no specific marker keyword),
+        // Fallback: if user asks a general question (no specific keyword),
         // ship the full Health Passport so the consultant has data to work with.
         if !anyMatch && !tests.isEmpty {
             for test in tests {
@@ -179,6 +209,18 @@ struct BrainView: View {
                     if let range = marker.referenceRange, !range.isEmpty { line += " | Ref: \(range)" }
                     if let flag = marker.flag, !flag.isEmpty { line += " | Flag: \(flag)" }
                     fragments[key] = line
+                }
+                for med in test.prescriptions {
+                    if med.name.isEmpty { continue }
+                    let key = "\(test.testName) — \(med.name)"
+                    var line = "Medication"
+                    if let d = med.dose, !d.isEmpty { line += " \(d)" }
+                    if let f = med.frequency, !f.isEmpty { line += ", \(f)" }
+                    if let du = med.duration, !du.isEmpty { line += ", \(du)" }
+                    fragments[key] = line
+                }
+                for field in test.structuredFields {
+                    fragments["\(test.testName) — \(field.key)"] = field.value
                 }
             }
         }

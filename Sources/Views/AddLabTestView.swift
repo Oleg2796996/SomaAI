@@ -10,8 +10,11 @@ struct AddLabTestView: View {
     let language: String
 
     @State private var testName: String = ""
+    /// Note: provider is now auto-detected. We keep it as state for the
+    /// user to override if OCR got it wrong.
     @State private var provider: String = ""
     @State private var date: Date = Date()
+    @State private var documentType: DocumentType = .labResult
     @State private var isPressed = false
 
     @State private var selectedItems: [PhotosPickerItem] = []
@@ -21,8 +24,12 @@ struct AddLabTestView: View {
     @State private var recognizedText: String = ""
     @State private var isProcessing = false
 
+    // Result of the 3-step pipeline. Drives the polymorphic VerificationView.
+    @State private var pendingExtraction: SomaExtractionResponse?
+    @State private var pendingMarkers: [SomaMarker] = []       // backward compat for lab path
+    @State private var pendingMedications: [SomaMedication] = []
+    @State private var pendingSections: [SomaSection] = []
     @State private var showingVerification = false
-    @State private var pendingMarkers: [SomaMarker] = []
     @State private var apiError: String? = nil
     @State private var showingErrorAlert = false
     @State private var showOCRDebug = false
@@ -32,7 +39,9 @@ struct AddLabTestView: View {
             Form {
                 Section(header: Text(Localization.somaTranslate("add_test_section", language: language))) {
                     TextField(Localization.somaTranslate("field_test_name", language: language), text: $testName)
-                    TextField(Localization.somaTranslate("field_provider", language: language), text: $provider)
+                    // Provider/organisation is now auto-detected by the LLM
+                    // and shown on the verification screen, so we omit the
+                    // form field here.
                     DatePicker(Localization.somaTranslate("field_date", language: language), selection: $date, displayedComponents: .date)
                 }
 
@@ -131,10 +140,17 @@ struct AddLabTestView: View {
             }
             .sheet(isPresented: $showingVerification) {
                 VerificationView(
+                    documentType: documentType,
+                    pendingExtraction: pendingExtraction,
                     markers: $pendingMarkers,
+                    medications: $pendingMedications,
+                    sections: $pendingSections,
+                    testName: $testName,
+                    provider: $provider,
+                    documentDate: $date,
                     language: language,
-                    onConfirm: { confirmedMarkers in
-                        saveFinalTest(with: confirmedMarkers)
+                    onConfirm: {
+                        saveFinalTest()
                     }
                 )
             }
@@ -282,21 +298,53 @@ struct AddLabTestView: View {
 
         isProcessing = true
         Task {
-            var markers: [SomaMarker] = []
+            // Quality gate: too-short OCR text -> unknown, no LLM call.
+            let ocr = recognizedText
+            if ocr.trimmingCharacters(in: .whitespacesAndNewlines).count < 30 {
+                apiError = "OCR text is too short (\(ocr.count) chars). Try a clearer photo or a different file."
+                showingErrorAlert = true
+                isProcessing = false
+                return
+            }
+
             do {
-                markers = try await SomaAPIClient.shared.structureText(recognizedText)
-                print("[SomaAI] LLM returned \(markers.count) markers")
+                // 3-step pipeline: classify -> extract -> validate
+                let extraction = try await SomaAPIClient.shared.processDocument(ocr)
+                pendingExtraction = extraction
+                documentType = DocumentType(rawValue: extraction.type) ?? .unknown
+                pendingMarkers = extraction.markers ?? []
+                pendingMedications = extraction.medications ?? []
+                pendingSections = extraction.sections ?? []
+                // Auto-fill test name + provider from extraction if user
+                // hasn't typed anything yet.
+                if testName.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let title = extraction.title, !title.isEmpty {
+                    testName = title
+                }
+                if provider.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let org = extraction.organization, !org.isEmpty {
+                    provider = org
+                }
+                // Auto-set document title for unknown type to avoid blank state
+                if documentType == .unknown, testName.trimmingCharacters(in: .whitespaces).isEmpty {
+                    let isRU = (language == "Русский" || language == "Russian")
+                    testName = isRU ? "Документ от \(date.formatted(date: .abbreviated, time: .omitted))" : "Document \(date.formatted(date: .abbreviated, time: .omitted))"
+                }
+                print("[SomaAI] 3-step pipeline: type=\(documentType.rawValue), conf=\(extraction.confidence), markers=\(pendingMarkers.count), meds=\(pendingMedications.count), sections=\(pendingSections.count)")
+
+                // Local regex fallback for labResult only, and only when LLM returned nothing.
+                if documentType == .labResult && pendingMarkers.isEmpty {
+                    pendingMarkers = localRegexParse(ocr)
+                    print("[SomaAI] Regex fallback extracted \(pendingMarkers.count) markers")
+                }
             } catch {
-                print("[SomaAI] LLM parse error: \(error.localizedDescription) — falling back to regex")
+                print("[SomaAI] 3-step pipeline error: \(error.localizedDescription)")
+                apiError = "LLM error: \(error.localizedDescription)"
+                showingErrorAlert = true
+                isProcessing = false
+                return
             }
 
-            // Fallback: local regex parser if LLM returned nothing or errored.
-            if markers.isEmpty {
-                markers = localRegexParse(recognizedText)
-                print("[SomaAI] Regex fallback extracted \(markers.count) markers")
-            }
-
-            pendingMarkers = markers
             showingVerification = true
             isProcessing = false
         }
@@ -358,10 +406,21 @@ struct AddLabTestView: View {
         return found
     }
 
-    private func saveFinalTest(with markers: [SomaMarker]) {
-        let newTest = LabTest(date: date, provider: provider, testName: testName)
+    private func saveFinalTest() {
+        let newTest = LabTest(
+            date: date,
+            provider: provider,
+            testName: testName.isEmpty
+                ? (Localization.somaTranslate("vault_empty_title", language: language) + " \(date.formatted(date: .abbreviated, time: .omitted))")
+                : testName,
+            documentType: documentType,
+            organization: provider.isEmpty ? nil : provider,
+            rawText: recognizedText,
+            extractionConfidence: pendingExtraction?.confidence ?? 0.5
+        )
 
-        for m in markers {
+        // Lab markers
+        for m in pendingMarkers {
             let marker = LabMarker(
                 name: m.name,
                 value: m.value,
@@ -371,11 +430,29 @@ struct AddLabTestView: View {
             )
             newTest.markers.append(marker)
         }
+        // Prescriptions
+        for p in pendingMedications {
+            let med = PrescribedMed(
+                name: p.name,
+                dose: p.dose,
+                frequency: p.frequency,
+                duration: p.duration,
+                route: p.route
+            )
+            newTest.prescriptions.append(med)
+        }
+        // Structured fields (epicrisis, consultation, etc.)
+        for (idx, s) in pendingSections.enumerated() {
+            let field = DocumentField(key: s.key, value: s.value, order: s.order ?? idx)
+            newTest.structuredFields.append(field)
+        }
+        // Always mark uncertain fields so VerificationView can warn
+        newTest.uncertainFields = pendingExtraction.map { _ in [] } ?? []
 
         modelContext.insert(newTest)
         do {
             try modelContext.save()
-            print("[SomaAI] Saved LabTest '\(newTest.testName)' with \(newTest.markers.count) markers")
+            print("[SomaAI] Saved \(documentType.rawValue) '\(newTest.testName)' with \(newTest.markers.count) markers / \(newTest.prescriptions.count) meds / \(newTest.structuredFields.count) sections")
         } catch {
             apiError = "Save failed: \(error.localizedDescription)"
             showingErrorAlert = true

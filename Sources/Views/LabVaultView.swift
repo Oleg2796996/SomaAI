@@ -20,15 +20,28 @@ struct LabVaultView: View {
                 } else {
                     ForEach(tests) { test in
                         NavigationLink(destination: LabTestDetailView(test: test, language: language)) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(test.testName)
-                                    .font(.headline)
-                                Text(test.date, style: .date)
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                Text("\(test.markers.count) marker\(test.markers.count == 1 ? "" : "s")")
-                                    .font(.caption)
-                                    .foregroundColor(test.markers.isEmpty ? .red : .secondary)
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: test.documentType.iconName)
+                                    .font(.title3)
+                                    .foregroundColor(.accentColor)
+                                    .frame(width: 28, height: 28)
+                                    .padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(test.testName)
+                                        .font(.headline)
+                                    HStack(spacing: 6) {
+                                        Text(test.date, style: .date)
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                        Text("·").foregroundColor(.secondary)
+                                        Text(test.documentType.displayNameRU)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Text(subtitle(for: test))
+                                        .font(.caption)
+                                        .foregroundColor(subtitleColor(for: test))
+                                }
                             }
                         }
                     }
@@ -52,6 +65,35 @@ struct LabVaultView: View {
     private func deleteTests(offsets: IndexSet) {
         for index in offsets {
             modelContext.delete(tests[index])
+        }
+    }
+
+    /// Subtitle shown under the document name. Adapted to documentType.
+    private func subtitle(for test: LabTest) -> String {
+        let isRU = (language == "Русский" || language == "Russian")
+        switch test.documentType {
+        case .labResult:
+            let n = test.markers.count
+            return isRU
+                ? "\(n) показател\(n == 1 ? "ь" : (n >= 2 && n <= 4 ? "я" : "ей"))"
+                : "\(n) marker\(n == 1 ? "" : "s")"
+        case .prescription:
+            let n = test.prescriptions.count
+            return isRU
+                ? "\(n) препарат\(n == 1 ? "" : (n >= 2 && n <= 4 ? "а" : "ов"))"
+                : "\(n) medication\(n == 1 ? "" : "s")"
+        case .epicrisis, .dischargeSummary, .consultation, .referral, .imagingReport, .vaccination, .unknown:
+            let n = test.structuredFields.count
+            if n == 0 { return isRU ? "Нет разделов" : "No sections" }
+            return isRU ? "\(n) раздел\(n == 1 ? "" : (n >= 2 && n <= 4 ? "а" : "ов"))" : "\(n) section\(n == 1 ? "" : "s")"
+        }
+    }
+
+    private func subtitleColor(for test: LabTest) -> Color {
+        switch test.documentType {
+        case .labResult: return test.markers.isEmpty ? .red : .secondary
+        case .prescription: return test.prescriptions.isEmpty ? .red : .secondary
+        default: return test.structuredFields.isEmpty ? .red : .secondary
         }
     }
 }
