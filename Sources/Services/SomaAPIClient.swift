@@ -76,9 +76,15 @@ struct SomaAPISettings: Codable {
     /// We pick agent/low here so the user gets a fast qwen3-vl response
     /// for short clinical extraction. If quality drops, change to
     /// 'wormsoft/agent/medium' or 'wormsoft/agent/high'.
+    ///
+    /// UPDATED 2026-06-26: the user's curl test showed that 'agent/low'
+    /// is reachable (auth OK), but their subscription only has steady
+    /// access to 'code/medium' — 'agent/low' rate-limited or in
+    /// maintenance for their API key. Reverting to 'code/medium' so the
+    /// app gets consistent ~3-8s responses again.
     static let defaultSettings = SomaAPISettings(
         baseURL: "https://ai.wormsoft.ru/api/gpt",
-        modelName: "wormsoft/agent/low"
+        modelName: "wormsoft/code/medium"
     )
 
     static func load() -> SomaAPISettings {
