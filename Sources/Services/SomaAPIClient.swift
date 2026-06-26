@@ -114,7 +114,7 @@ final class SomaAPIClient {
     /// 3-step pipeline when the caller asks for universal extraction.
     func structureText(_ text: String) async throws -> [SomaMarker] {
         let result = try await processDocument(text)
-        return result.markers
+        return result.markers ?? []
     }
 
     // MARK: 3-step pipeline entry point
