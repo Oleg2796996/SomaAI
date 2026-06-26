@@ -74,8 +74,8 @@ struct LocalExtractor {
     static let clinicalPatterns: [(regex: String, key: String)] = [
         ("(?:Жалобы|Complaints)[:\\s-]+", "Жалобы"),
         ("(?:Анамнез(?:\\s+болезни|\\s+заболевания)?|Anamnesis(?:\\s+of\\s+present\\s+illness)?|History(?:\\s+of\\s+present\\s+illness)?)[:\\s-]+", "Анамнез"),
-        ("(?:Объективный\\s+статус|Status\\s+localis|Objective\\s+status)[:\\s-]+", "Объективный статус"),
-        ("(?:Status\\s+localis|Объективный\\s+статус|Objective\\s+status)[:\\s-]+", "Status localis"),
+        ("(?:Объективный\\s+статус|Objective\\s+status)[:\\s-]+", "Объективный статус"),
+        ("(?:Status\\s+localis|Status\\s+localis)[:\\s-]+", "Status localis"),
         ("(?:Особенности\\s+течения\\s+заболевания|Course\\s+of\\s+disease|Особенности\\s+течения)[:\\s-]+", "Особенности течения"),
         ("(?:Операци[яи]|Surgery|Operations?|Operative\\s+notes?)[:\\s-]+", "Операции"),
         ("(?:Лечение|Treatment|Therapy)[:\\s-]+", "Лечение"),
@@ -121,15 +121,35 @@ struct LocalExtractor {
         patterns: [(regex: String, key: String)],
         type: DocumentType?
     ) -> [SomaSection] {
-        // Build a list of (range, key) hits across all patterns, sorted
-        // by start position. We use NSRegularExpression for Cyrillic support.
+        // Dedup helper: two patterns can map to the same key (e.g. "Диагноз"
+        // and "Диагноз клинический" both produce "Диагноз"). We pick ONE
+        // hit per key — the FIRST occurrence in text order across all
+        // patterns. This keeps ForEach keys unique downstream.
+        // Also: if the same word appears twice in the text, we still only
+        // emit one section (the first hit) — duplicate sections would
+        // duplicate the same clinical info anyway.
+        var seenKeys: Set<String> = []
         var hits: [(range: NSRange, key: String, headerEnd: Int)] = []
-        for (pattern, key) in patterns {
-            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+        // Collect all candidates first, then take one per key in text order.
+        var candidates: [(range: NSRange, key: String, headerEnd: Int, patternIdx: Int)] = []
+        for (i, pat) in patterns.enumerated() {
+            guard let re = try? NSRegularExpression(pattern: pat.regex, options: [.caseInsensitive]) else { continue }
             let matches = re.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))
             for m in matches where m.range.location != NSNotFound {
-                hits.append((m.range, key, m.range.location + m.range.length))
+                candidates.append((m.range, pat.key, m.range.location + m.range.length, i))
             }
+        }
+        if candidates.isEmpty { return [] }
+        candidates.sort {
+            if $0.range.location != $1.range.location { return $0.range.location < $1.range.location }
+            // For ties, prefer the more specific pattern (later in the list
+            // is more specific, e.g. "Диагноз клинический" after "Диагноз").
+            return $0.patternIdx > $1.patternIdx
+        }
+        for c in candidates {
+            if seenKeys.contains(c.key) { continue }
+            seenKeys.insert(c.key)
+            hits.append((c.range, c.key, c.headerEnd))
         }
         if hits.isEmpty { return [] }
         hits.sort { $0.range.location < $1.range.location }
