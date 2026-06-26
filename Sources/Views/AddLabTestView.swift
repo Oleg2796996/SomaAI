@@ -1,7 +1,6 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
-import Vision
 import PDFKit
 
 struct AddLabTestView: View {
@@ -20,8 +19,11 @@ struct AddLabTestView: View {
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var isImportingPDF = false
     @State private var isShowingCamera = false
+    @State private var isShowingScanner = false
     @State private var capturedImage: UIImage?
+    @State private var scannedPages: [UIImage] = []
     @State private var recognizedText: String = ""
+    @State private var ocrQuality: OCRQuality?
     @State private var isProcessing = false
 
     // Result of the 3-step pipeline. Drives the polymorphic VerificationView.
@@ -47,6 +49,13 @@ struct AddLabTestView: View {
 
                 Section {
                     VStack(spacing: 12) {
+                        Button(action: { isShowingScanner = true }) {
+                            Label(Localization.somaTranslate("button_scan", language: language), systemImage: "doc.viewfinder")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isProcessing)
+
                         Button(action: { isShowingCamera = true }) {
                             Label(Localization.somaTranslate("button_camera", language: language), systemImage: "camera.fill")
                                 .frame(maxWidth: .infinity)
@@ -76,6 +85,13 @@ struct AddLabTestView: View {
 
                 if showOCRDebug && !recognizedText.isEmpty {
                     Section(header: Text("OCR Result (Debug)")) {
+                        if let q = ocrQuality {
+                            HStack {
+                                Text("Quality: \(q.label)")
+                                    .font(.caption)
+                                Spacer()
+                            }
+                        }
                         ScrollView {
                             Text(recognizedText)
                                 .font(.caption)
@@ -133,6 +149,17 @@ struct AddLabTestView: View {
             .sheet(isPresented: $isShowingCamera) {
                 ImagePicker(image: $capturedImage)
             }
+            .sheet(isPresented: $isShowingScanner) {
+                DocumentScannerView(scannedImages: $scannedPages, onError: { err in
+                    apiError = err.localizedDescription
+                    showingErrorAlert = true
+                })
+            }
+            .onChange(of: scannedPages) { _, newValue in
+                if !newValue.isEmpty {
+                    Task { await handleScannedPages(newValue) }
+                }
+            }
             .onChange(of: capturedImage) { _, newValue in
                 if let image = newValue {
                     Task { await handleSingleImageOCR(image) }
@@ -165,126 +192,70 @@ struct AddLabTestView: View {
     private func handleSingleImageOCR(_ image: UIImage) async {
         isProcessing = true
         defer { isProcessing = false }
-        do {
-            let text = try await performOCR(on: image)
-            recognizedText = text
-            print("[SomaAI] OCR produced \(text.count) chars (single image)")
-            print("[SomaAI] OCR preview: \(String(text.prefix(400)))")
-        } catch {
-            apiError = "OCR failed: \(error.localizedDescription)"
-            showingErrorAlert = true
-        }
+        let result = await OCRPipeline.shared.process(image: image)
+        applyOCRResult(result, source: "single image")
+    }
+
+    private func handleScannedPages(_ pages: [UIImage]) async {
+        isProcessing = true
+        defer { isProcessing = false }
+        let result = await OCRPipeline.shared.process(pages: pages)
+        applyOCRResult(result, source: "scanner (\(pages.count) pages)")
     }
 
     private func handleImageSelection() async {
         guard !selectedItems.isEmpty else { return }
         isProcessing = true
         defer { isProcessing = false }
-        var allText = ""
-
-        await withTaskGroup(of: (Int, String).self) { group in
-            for (index, item) in selectedItems.enumerated() {
-                group.addTask {
-                    do {
-                        if let data = try await item.loadTransferable(type: Data.self),
-                           let image = UIImage(data: data) {
-                            let text = try await self.performOCR(on: image)
-                            return (index, text)
-                        }
-                    } catch {
-                        print("OCR Error on page \(index): \(error)")
-                    }
-                    return (index, "")
-                }
+        var images: [UIImage] = []
+        for item in selectedItems {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let img = UIImage(data: data) {
+                images.append(img)
             }
-
-            var results = [Int: String]()
-            for await (index, text) in group {
-                results[index] = text
-            }
-
-            allText = results.sorted(by: { $0.key < $1.key })
-                             .map { "--- Page \($0.key + 1) ---\n\($0.value)" }
-                             .joined(separator: "\n\n")
         }
-
-        recognizedText = allText
-        print("[SomaAI] OCR produced \(allText.count) chars (image path)")
-        print("[SomaAI] OCR preview: \(String(allText.prefix(400)))")
+        guard !images.isEmpty else {
+            apiError = "Could not load selected photos."
+            showingErrorAlert = true
+            return
+        }
+        let result = await OCRPipeline.shared.process(pages: images)
+        applyOCRResult(result, source: "photos (\(images.count))")
     }
 
     private func handlePDFSelection(url: URL) async {
         isProcessing = true
         defer { isProcessing = false }
-        var allText = ""
-
-        do {
-            if let pdf = PDFDocument(url: url) {
-                let pageCount = pdf.pageCount
-                var images = [UIImage]()
-
-                for i in 0..<pageCount {
-                    if let page = pdf.page(at: i) {
-                        let bounds = page.bounds(for: .mediaBox)
-                        let pageSize = CGSize(width: bounds.width, height: bounds.height)
-                        let img = page.thumbnail(of: pageSize, for: .mediaBox)
-                        images.append(img)
-                    }
-                }
-
-                var pageResults = [Int: String]()
-                await withTaskGroup(of: (Int, String).self) { group in
-                    for (index, image) in images.enumerated() {
-                        group.addTask {
-                            do {
-                                let text = try await self.performOCR(on: image)
-                                return (index, text)
-                            } catch {
-                                return (index, "")
-                            }
-                        }
-                    }
-                    for await (index, text) in group {
-                        pageResults[index] = text
-                    }
-                }
-
-                allText = pageResults.sorted(by: { $0.key < $1.key })
-                                     .map { "--- PDF Page \($0.key + 1) ---\n\($0.value)" }
-                                     .joined(separator: "\n\n")
-            }
-        } catch {
-            apiError = "PDF processing failed: \(error.localizedDescription)"
+        guard let pdf = PDFDocument(url: url) else {
+            apiError = "Could not open PDF."
             showingErrorAlert = true
+            return
         }
-
-        recognizedText = allText
-        print("[SomaAI] OCR produced \(allText.count) chars (PDF path)")
-        print("[SomaAI] OCR preview: \(String(allText.prefix(400)))")
+        var images: [UIImage] = []
+        for i in 0..<pdf.pageCount {
+            if let page = pdf.page(at: i), let img = page.renderAsImage() {
+                images.append(img)
+            }
+        }
+        guard !images.isEmpty else {
+            apiError = "PDF has no pages or all pages are blank."
+            showingErrorAlert = true
+            return
+        }
+        let result = await OCRPipeline.shared.process(pages: images)
+        applyOCRResult(result, source: "PDF (\(images.count) pages)")
     }
 
-    private func performOCR(on image: UIImage) async throws -> String {
-        guard let cgImage = image.cgImage else {
-            throw NSError(domain: "OCR", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get CGImage"])
-        }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let request = VNRecognizeTextRequest { request, error in
-                if let error = error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                let observations = request.results as? [VNRecognizedTextObservation]
-                let recognizedStrings = observations?.compactMap { $0.topCandidates(1).first?.string } ?? []
-                let fullText = recognizedStrings.joined(separator: "\n")
-                continuation.resume(returning: fullText)
-            }
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: error)
-            }
+    /// Centralised post-OCR handler. Stores the text, surfaces
+    /// quality to the UI and prints a structured log line.
+    private func applyOCRResult(_ result: OCRResult, source: String) {
+        recognizedText = result.text
+        ocrQuality = result.quality
+        print("[SomaAI] OCR \(source): \(result.text.count) chars, quality=\(result.quality.label), confidence=\(result.confidence)")
+        print("[SomaAI] OCR preview: \(String(result.text.prefix(400)))")
+        if result.quality == .poor {
+            apiError = "OCR quality is poor (confidence \(Int(result.confidence * 100))%). The extracted text may be incomplete. Try a clearer scan or higher-resolution image."
+            showingErrorAlert = true
         }
     }
 
