@@ -189,6 +189,7 @@ struct Localization {
             "brain_disclaimer_footer": "This assistant organizes data; it does not diagnose. Consult a physician.",
             "error_no_context": "No matching records found. Add lab results first, or ask a general question.",
             "brain_welcome_message": "Ask me about your latest lab results, trends, or what to discuss with your doctor."
+        ],
         "Русский": [
             "profile_title": "Профиль Soma",
             "section_personal": "Личная информация",
@@ -225,8 +226,9 @@ struct Localization {
             "brain_disclaimer_footer": "Ассистент организует данные, но не ставит диагноз. Обратитесь к врачу.",
             "error_no_context": "Подходящих записей не найдено. Сначала добавьте анализы или задайте общий вопрос.",
             "brain_welcome_message": "Спросите меня о последних анализах, тенденциях или о чём обсудить с врачом."
+        ]
     ]
-    
+
     static func somaTranslate(_ key: String, language: String) -> String {
         let lang = (language == "Русский" || language == "English") ? language : "English"
         return strings[lang]?[key] ?? key
