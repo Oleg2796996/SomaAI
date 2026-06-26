@@ -242,12 +242,14 @@ final class SomaAPIClient {
         // Russian выписные эпикризы put "Эпикриз выписной" in the title/footer,
         // so the tail slice almost always wins. Weight the tail ×1.3.
         scores[t.type, default: 0] *= 1.3
+        print("[SomaAI] smartClassify tallies: \(scores.map { "\($0.key)=\(String(format: "%.2f", $0.value))" }.sorted().joined(separator: " "))")
         let winner = scores.max(by: { $0.value < $1.value }) ?? (h.type, 0)
         let type = winner.key
         let confidence = min(1.0, max(h.confidence, m.confidence, t.confidence))
         // Pick the organisation from the slice that reported the most
         // detail. Prefer head, then tail.
         let org = h.organization ?? t.organization ?? m.organization
+        print("[SomaAI] smartClassify winner: \(type)@\(confidence) org=\(org ?? "nil")")
         return SomaClassifyResponse(type: type, confidence: confidence, organization: org)
     }
 
@@ -296,19 +298,29 @@ final class SomaAPIClient {
             ["role": "system", "content": prompt],
             ["role": "user", "content": text]
         ]
-        let content = try await sendChat(messages: messages, temperature: 0.1)
+        let content = try await sendChat(messages: messages, temperature: 0.0)
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
-            print("[SomaAI] extract type=\(type.rawValue) — content is not valid UTF-8")
-            return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.0, markers: nil, medications: nil, sections: nil)
+            print("[SomaAI] extract type=\(type.rawValue) — content is not valid UTF-8, returning raw text fallback")
+            return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.3, markers: nil, medications: nil, sections: [SomaSection(key: "Текст", value: text, order: 0)])
         }
         do {
             return try JSONDecoder().decode(SomaExtractionResponse.self, from: data)
         } catch {
             print("[SomaAI] extract decode failed for type \(type.rawValue): \(error.localizedDescription)")
-            print("[SomaAI] full content was: \(content)")
-            return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.0, markers: nil, medications: nil, sections: nil)
+            print("[SomaAI] full content was: \(content.prefix(2000))")
+            // Fallback: do NOT discard the OCR. Return the raw text inside
+            // a single section so the verification UI can show it and the
+            // user can manually re-classify or re-extract. confidence=0.3
+            // is high enough to not trigger the 'LLM not confident'
+            // warning but low enough that the user knows it was a fallback.
+            let truncated = text.count > 3000 ? String(text.prefix(3000)) + "…[truncated]" : text
+            return SomaExtractionResponse(
+                type: type.rawValue, date: nil, organization: nil, title: nil,
+                confidence: 0.3, markers: nil, medications: nil,
+                sections: [SomaSection(key: "Сырой текст", value: truncated, order: 0)]
+            )
         }
     }
 
