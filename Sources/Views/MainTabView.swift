@@ -17,7 +17,7 @@ struct MainTabView: View {
                     Label(Localization.somaTranslate("tab_vault", language: currentLanguage), systemImage: "folder.fill")
                 }
 
-            BrainView(language: currentLanguage, passedInTests: tests)
+            BrainView(passedInTests: tests, language: currentLanguage)
                 .tabItem {
                     Label(Localization.somaTranslate("tab_brain", language: currentLanguage), systemImage: "brain.head.profile")
                 }
