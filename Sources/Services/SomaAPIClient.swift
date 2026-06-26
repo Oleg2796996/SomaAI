@@ -123,16 +123,46 @@ final class SomaAPIClient {
     /// `structureText`. Caller gets back a flat, normalised payload that
     /// the UI can directly map to `MedicalDocument`.
     func processDocument(_ text: String) async throws -> SomaExtractionResponse {
-        // Step 1: classify — multi-vote on head/mid/tail to defeat
-        // OCR-мусор in the first ~200 chars (изосерология заголовок vs
-        // narrative header ниже по тексту).
-        let classification = try await smartClassify(text)
-        let docType = DocumentType(rawValue: classification.type) ?? .unknown
-        // Step 2: extract (type-aware) — full text, the extractor
-        // handles noise; the classifier only needs the right window.
-        let extraction = try await extractDocument(text, type: docType)
-        // Step 3: validate + normalise
-        return validate(extraction: extraction, classification: classification)
+        // Overall 30s guard around the whole pipeline. If the LLM
+        // endpoint hangs on any of the 4 calls (classify×3 + extract
+        // + validate), we return unknown with raw sections instead of
+        // leaving the user staring at a frozen spinner. The verification
+        // UI knows how to render .unknown + raw text.
+        return await withTaskGroup(of: SomaExtractionResponse.self) { group in
+            group.addTask {
+                do {
+                    let cleaned = self.preprocessForClassification(text)
+                    let body = cleaned.count > 200 ? cleaned : text
+                    let classification = try await self.smartClassify(body)
+                    let docType = DocumentType(rawValue: classification.type) ?? .unknown
+                    let extraction = try await self.extractDocument(body, type: docType)
+                    return self.validate(extraction: extraction, classification: classification)
+                } catch {
+                    print("[SomaAI] processDocument overall catch: \(error.localizedDescription)")
+                    return SomaExtractionResponse(
+                        type: DocumentType.unknown.rawValue,
+                        date: nil, organization: nil, title: nil,
+                        confidence: 0.0,
+                        markers: nil, medications: nil,
+                        sections: [SomaSection(key: "Текст", value: text, order: 0)]
+                    )
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                print("[SomaAI] processDocument overall TIMEOUT after 30s — returning unknown fallback")
+                return SomaExtractionResponse(
+                    type: DocumentType.unknown.rawValue,
+                    date: nil, organization: nil, title: nil,
+                    confidence: 0.0,
+                    markers: nil, medications: nil,
+                    sections: [SomaSection(key: "Текст", value: text, order: 0)]
+                )
+            }
+            let result = await group.next()!
+            group.cancelAll()
+            return result
+        }
     }
 
     // MARK: Classification pre-processing + multi-vote
@@ -181,10 +211,27 @@ final class SomaAPIClient {
         let tail = String(body.suffix(length - tailStart))
         let mid = String(body[body.index(body.startIndex, offsetBy: midStart)..<body.index(body.startIndex, offsetBy: midEnd)])
 
-        async let headVote = classifyDocument(head)
-        let h = try await headVote
-        let m = try await classifyDocument(mid)
-        let t = try await classifyDocument(tail)
+        // Each vote has its own 12s timeout. If all three fail/timeout
+        // we return unknown@0 — the caller will fall back to the .unknown
+        // UI and the user can still edit / save the document manually.
+        let headResult = await sendChatWithTimeout(messages: [
+            ["role": "system", "content": SomaPrompts.documentClassifier],
+            ["role": "user", "content": head]
+        ], temperature: 0.0)
+        let midResult = await sendChatWithTimeout(messages: [
+            ["role": "system", "content": SomaPrompts.documentClassifier],
+            ["role": "user", "content": mid]
+        ], temperature: 0.0)
+        let tailResult = await sendChatWithTimeout(messages: [
+            ["role": "system", "content": SomaPrompts.documentClassifier],
+            ["role": "user", "content": tail]
+        ], temperature: 0.0)
+        let h = headResult.vote ?? SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
+        let m = midResult.vote ?? SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
+        let t = tailResult.vote ?? SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
+        if headResult.error != nil || midResult.error != nil || tailResult.error != nil {
+            print("[SomaAI] smartClassify: some votes timed out/failed — using whatever votes came back")
+        }
         print("[SomaAI] smartClassify votes: head=\(h.type)@\(h.confidence) mid=\(m.type)@\(m.confidence) tail=\(t.type)@\(t.confidence)")
 
         // Tally: count types, pick the one with the highest sum-of-confidence.
@@ -309,6 +356,11 @@ final class SomaAPIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // Hard 20s timeout per HTTP call. The Wormsoft endpoint has been
+        // observed to hang for >60s on long prompts; we'd rather give up
+        // and let smartClassify()'s fail-open return unknown than freeze
+        // the UI.
+        request.timeoutInterval = 20
         let body: [String: Any] = [
             "model": settings.modelName,
             "messages": messages,
@@ -326,6 +378,33 @@ final class SomaAPIClient {
             throw SomaAPIError.unparseableResponse
         }
         return content
+    }
+
+    /// Race sendChat against a timeout. Returns nil if the model hangs
+    /// or throws — callers should treat that as a "vote lost" and
+    /// continue without blocking the pipeline.
+    private func sendChatWithTimeout(messages: [[String: String]], temperature: Double, seconds: Double = 12) async -> (vote: SomaClassifyResponse?, error: Error?) {
+        do {
+            let content = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask { try await self.sendChat(messages: messages, temperature: temperature) }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                    throw CancellationError()
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+            guard let data = content.data(using: .utf8) else {
+                return (SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil), nil)
+            }
+            if let resp = try? JSONDecoder().decode(SomaClassifyResponse.self, from: data) {
+                return (resp, nil)
+            }
+            return (SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil), nil)
+        } catch {
+            return (nil, error)
+        }
     }
 
     /// Sends a user health question with filtered local context.
