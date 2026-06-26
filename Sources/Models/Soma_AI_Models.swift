@@ -82,7 +82,7 @@ enum DocumentType: String, Codable, CaseIterable {
         case .prescription: return "pills"
         case .referral: return "arrow.right.doc"
         case .consultation: return "stethoscope"
-        case .dischargeSummary: return "arrow.uturn.backward.doc"
+        case .dischargeSummary: return "doc.badge.arrow.up"
         case .imagingReport: return "rectangle.dashed.badge.record"
         case .vaccination: return "syringe"
         case .unknown: return "doc"
