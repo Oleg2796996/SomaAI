@@ -203,6 +203,14 @@ enum SomaPrompts {
 You are a strict medical data parser. Extract lab markers from the raw OCR text and return ONLY a JSON object with a top-level key 'markers'.
 Each marker has: name (string, required), value (string, required), unit (string or null), referenceRange (string or null), flag (string: "High", "Low", or "Normal", or null).
 Do not output markdown, explanations, or any text outside the JSON.
+
+TYPICAL LAB MARKERS YOU SHOULD RECOGNIZE (RU + EN):
+Urine (Моча): цвет, прозрачность, pH, плотность/удельный вес (sg), белок (protein), глюкоза (glucose), кетоны (ketones), лейкоциты (leukocytes/WBC), эритроциты (erythrocytes/RBC), нитриты (nitrites), уробилиноген (urobilinogen), билирубин (bilirubin), слизь (mucus), бактерии (bacteria), эпителий (epithelium), цилиндры (casts), соли (salts/crystals).
+Blood (Кровь общий анализ / CBC): гемоглобин (Hb/HGB), эритроциты (RBC), гематокрит (HCT), лейкоциты (WBC), тромбоциты (PLT), MCV, MCH, MCHC, RDW, эозинофилы, базофилы, моноциты, лимфоциты, нейтрофилы, СОЭ (ESR).
+Biochemistry (Биохимия): глюкоза, мочевина, креатинин, билирубин общий/прямой, АЛТ, АСТ, общий белок, альбумин, холестерин общий, ЛПНП, ЛПВП, триглицериды.
+
+If a row is missing a value but has a name + reference range, still include it with value "—".
+Return JSON even if uncertain — the user will verify in the next step.
 """
 
     static let consultantSystem = """

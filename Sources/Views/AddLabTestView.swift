@@ -276,16 +276,80 @@ struct AddLabTestView: View {
 
         isProcessing = true
         Task {
+            var markers: [SomaMarker] = []
             do {
-                let markers = try await SomaAPIClient.shared.structureText(recognizedText)
-                pendingMarkers = markers
-                showingVerification = true
+                markers = try await SomaAPIClient.shared.structureText(recognizedText)
+                print("[SomaAI] LLM returned \(markers.count) markers")
             } catch {
-                apiError = error.localizedDescription
-                showingErrorAlert = true
+                print("[SomaAI] LLM parse error: \(error.localizedDescription) — falling back to regex")
             }
+
+            // Fallback: local regex parser if LLM returned nothing or errored.
+            if markers.isEmpty {
+                markers = localRegexParse(recognizedText)
+                print("[SomaAI] Regex fallback extracted \(markers.count) markers")
+            }
+
+            pendingMarkers = markers
+            showingVerification = true
             isProcessing = false
         }
+    }
+
+    /// Best-effort local parser: scans OCR text for known lab marker names
+    /// followed by a number / range on the next lines.
+    private func localRegexParse(_ text: String) -> [SomaMarker] {
+        let known: [(names: [String], unit: String?)] = [
+            (["цвет", "color"], nil),
+            (["прозрачность", "clarity", "appearance"], nil),
+            (["ph"], nil),
+            (["плотность", "удельный вес", "specific gravity", "sg"], nil),
+            (["белок", "protein"], "г/л"),
+            (["глюкоза", "glucose", "сахар"], "ммоль/л"),
+            (["кетоны", "ketones"], "ммоль/л"),
+            (["лейкоциты", "leukocytes", "wbc", "лейкоцит"], "в п/зр"),
+            (["эритроциты", "erythrocytes", "rbc", "эритроцит"], "в п/зр"),
+            (["нитриты", "nitrites"], nil),
+            (["уробилиноген", "urobilinogen"], "мкмоль/л"),
+            (["билирубин", "bilirubin"], "мкмоль/л"),
+            (["слизь", "mucus"], nil),
+            (["бактерии", "bacteria"], nil),
+            (["эпителий", "epithelium"], "в п/зр"),
+            (["гемоглобин", "hemoglobin", "hgb", "hb"], "г/л"),
+            (["гематокрит", "hematocrit", "hct"], "%"),
+            (["тромбоциты", "platelets", "plt"], "10^9/л")
+        ]
+
+        var found: [SomaMarker] = []
+        let lower = text.lowercased()
+        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+
+        for (names, defaultUnit) in known {
+            for name in names {
+                if let lineIdx = lines.firstIndex(where: { $0.lowercased().contains(name) }) {
+                    // Look at the same line + next 2 lines for a number.
+                    let window = lines[lineIdx..<min(lineIdx + 3, lines.count)].joined(separator: " ")
+                    let valuePattern = "[0-9]+[\\.,]?[0-9]*"
+                    if let match = window.range(of: valuePattern, options: .regularExpression) {
+                        let value = String(window[match])
+                        let displayName = lines[lineIdx].lowercased().contains(name) ? name : name
+                        let marker = SomaMarker(
+                            name: displayName.capitalized,
+                            value: value,
+                            unit: defaultUnit,
+                            referenceRange: nil,
+                            flag: nil
+                        )
+                        if !found.contains(where: { $0.name.lowercased() == marker.name.lowercased() }) {
+                            found.append(marker)
+                        }
+                    }
+                    break
+                }
+            }
+            _ = lower
+        }
+        return found
     }
 
     private func saveFinalTest(with markers: [SomaMarker]) {
