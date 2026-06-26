@@ -149,8 +149,8 @@ final class SomaAPIClient {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 35_000_000_000)
-                print("[SomaAI] processDocument overall TIMEOUT after 35s — returning unknown fallback")
+                try? await Task.sleep(nanoseconds: 50_000_000_000)
+                print("[SomaAI] processDocument overall TIMEOUT after 50s — returning unknown fallback")
                 return SomaExtractionResponse(
                     type: DocumentType.unknown.rawValue,
                     date: nil, organization: nil, title: nil,
