@@ -367,6 +367,7 @@ final class SomaAPIClient {
             let local = LocalExtractor.extract(text, type: type)
             print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
             return local
+        }
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
