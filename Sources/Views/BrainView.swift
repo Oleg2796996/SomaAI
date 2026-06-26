@@ -9,16 +9,13 @@ struct BrainView: View {
 
     private var tests: [LabTest] { persistedTests.isEmpty ? passedInTests : persistedTests }
 
-    /// Use the view's own language, falling back to Localization default.
-    private var effectiveLanguage: String {
-        // The view is given a language by MainTabView; just use it.
-        return language
-    }
-
     let language: String
 
+    // Default English welcome; onAppear swaps it for the localized copy
+    // once `language` (a stored let) is in scope. Swift forbids using
+    // instance members from @State initialisers.
     @State private var messages: [ChatMessage] = [
-        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: language))
+        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: "English"))
     ]
     @State private var inputText: String = ""
     @State private var isLoading = false
@@ -94,6 +91,20 @@ struct BrainView: View {
             } message: { error in
                 Text(error)
             }
+            .onAppear {
+                localizeWelcomeIfNeeded()
+            }
+        }
+    }
+
+    /// First appearance: rewrite the hard-coded English welcome message
+    /// to the user's actual preferred language. The @State initializer
+    /// above can't read `language`, so we do it here instead.
+    private func localizeWelcomeIfNeeded() {
+        guard messages.count == 1 else { return }
+        let welcome = Localization.somaTranslate("brain_welcome_message", language: language)
+        if messages[0].text != welcome {
+            messages[0] = ChatMessage(role: .assistant, text: welcome, source: .cloud)
         }
     }
 
