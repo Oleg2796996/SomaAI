@@ -15,6 +15,7 @@ struct BrainView: View {
     @State private var scrollTarget: UUID?
     @State private var errorMessage: String? = nil
     @State private var showingError = false
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -42,8 +43,11 @@ struct BrainView: View {
 
                 VStack(spacing: 8) {
                     HStack(spacing: 12) {
-                        TextField(Localization.somaTranslate("brain_input_placeholder", language: language), text: $inputText, axis: .vertical)
+                        TextField(Localization.somaTranslate("brain_input_placeholder", language: language), text: $inputText)
                             .textFieldStyle(.roundedBorder)
+                            .submitLabel(.send)
+                            .focused($inputFocused)
+                            .onSubmit { sendMessage() }
                             .disabled(isLoading)
 
                         Button(action: sendMessage) {
@@ -65,6 +69,12 @@ struct BrainView: View {
                 }
                 .padding()
                 .background(.ultraThinMaterial)
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { inputFocused = false }
+                    }
+                }
             }
             .navigationTitle("Soma Brain")
             .navigationBarTitleDisplayMode(.inline)
@@ -79,6 +89,9 @@ struct BrainView: View {
     private func sendMessage() {
         let question = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
+
+        // Dismiss keyboard before sending so it doesn't cover the new message.
+        inputFocused = false
 
         let userMessage = ChatMessage(role: .user, text: question)
         messages.append(userMessage)
@@ -106,22 +119,79 @@ struct BrainView: View {
         }
     }
 
-    /// Naive RAG: collect relevant marker snippets based on keywords in the question.
+    /// Build context for the LLM consultant.
+    /// Strategy:
+    ///  1. Try keyword match (RU + EN) on marker name.
+    ///  2. If nothing matched, send ALL tests (general questions like "что у меня").
+    ///  3. If there are no tests at all, return empty so the model can answer honestly.
     private func buildContextFragments(for question: String) -> [String: String] {
-        var fragments: [String: String] = [:]
         let lowercased = question.lowercased()
+        var fragments: [String: String] = [:]
+        var anyMatch = false
 
         for test in tests {
             for marker in test.markers {
-                let markerKey = marker.name.lowercased()
-                if lowercased.contains(markerKey) || markerKey.split(separator: " ").contains(where: { lowercased.contains(String($0)) }) {
+                let nameLower = marker.name.lowercased()
+                let nameWords = nameLower.split(separator: " ")
+                let synonyms = markerSynonyms(for: nameLower)
+
+                let hit = lowercased.contains(nameLower)
+                    || nameWords.contains(where: { lowercased.contains(String($0)) })
+                    || synonyms.contains(where: { lowercased.contains($0) })
+
+                if hit {
+                    anyMatch = true
                     let key = "\(test.testName) — \(marker.name)"
-                    fragments[key] = "\(marker.value) \(marker.unit ?? "") (ref: \(marker.referenceRange ?? "n/a"))"
+                    var line = "Value: \(marker.value) \(marker.unit ?? "")"
+                    if let range = marker.referenceRange, !range.isEmpty { line += " | Ref: \(range)" }
+                    if let flag = marker.flag, !flag.isEmpty { line += " | Flag: \(flag)" }
+                    fragments[key] = line
+                }
+            }
+        }
+
+        // Fallback: if user asks a general question (no specific marker keyword),
+        // ship the full Health Passport so the consultant has data to work with.
+        if !anyMatch && !tests.isEmpty {
+            for test in tests {
+                for marker in test.markers {
+                    let key = "\(test.testName) — \(marker.name)"
+                    var line = "Value: \(marker.value) \(marker.unit ?? "")"
+                    if let range = marker.referenceRange, !range.isEmpty { line += " | Ref: \(range)" }
+                    if let flag = marker.flag, !flag.isEmpty { line += " | Flag: \(flag)" }
+                    fragments[key] = line
                 }
             }
         }
 
         return fragments
+    }
+
+    /// Russian ↔ English synonyms for common lab markers. Extend as needed.
+    private func markerSynonyms(for markerName: String) -> [String] {
+        let dict: [String: [String]] = [
+            "лейкоциты": ["wbc", "white blood", "white blood cells", "leukocytes", "leukocyte"],
+            "эритроциты": ["rbc", "red blood", "red blood cells", "erythrocytes", "erythrocyte"],
+            "гемоглобин": ["hgb", "hb", "hemoglobin", "haemoglobin"],
+            "гематокрит": ["hct", "hematocrit", "haematocrit"],
+            "тромбоциты": ["plt", "platelets", "thrombocytes", "thrombocyte"],
+            "кетоны": ["ketones", "ketone", "кетоновые тела"],
+            "глюкоза": ["glucose", "сахар", "sugar"],
+            "белок": ["protein", "общий белок", "total protein"],
+            "билирубин": ["bilirubin"],
+            "креатинин": ["creatinine", "crea"],
+            "мочевина": ["urea", "urea nitrogen", "bun"],
+            "аld": [],
+            "аст": ["ast", "aspartate"],
+            "алт": ["alt", "alanine"],
+            "ph": ["кислотность", "acidity"]
+        ]
+        for (key, values) in dict {
+            if markerName.contains(key) || key.contains(markerName) {
+                return values
+            }
+        }
+        return []
     }
 }
 
