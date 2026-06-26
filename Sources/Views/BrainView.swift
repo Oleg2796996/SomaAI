@@ -1,9 +1,13 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct BrainView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
+    @Query(sort: \LabTest.date, order: .reverse) private var persistedTests: [LabTest]
+    let passedInTests: [LabTest]
+
+    private var tests: [LabTest] { persistedTests.isEmpty ? passedInTests : persistedTests }
 
     let language: String
 
@@ -78,6 +82,7 @@ struct BrainView: View {
             }
             .navigationTitle("Soma Brain")
             .navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.immediately)
             .alert("Brain Error", isPresented: $showingError, presenting: errorMessage) { _ in
                 Button("OK") {}
             } message: { error in
@@ -86,12 +91,20 @@ struct BrainView: View {
         }
     }
 
+    /// Hard-resign first responder from any active text field.
+    /// Needed because @FocusState dismissal can race with the async Task.
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
     private func sendMessage() {
         let question = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
 
-        // Dismiss keyboard before sending so it doesn't cover the new message.
+        // Dismiss keyboard on the main thread BEFORE the async work,
+        // otherwise the new bubble lands under the keyboard.
         inputFocused = false
+        dismissKeyboard()
 
         let userMessage = ChatMessage(role: .user, text: question)
         messages.append(userMessage)

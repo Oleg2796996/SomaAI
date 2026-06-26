@@ -3,6 +3,7 @@ import SwiftData
 
 struct MainTabView: View {
     @State private var currentLanguage: String = "English"
+    @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
 
     var body: some View {
         TabView {
@@ -16,7 +17,7 @@ struct MainTabView: View {
                     Label(Localization.somaTranslate("tab_vault", language: currentLanguage), systemImage: "folder.fill")
                 }
 
-            BrainView(language: currentLanguage)
+            BrainView(language: currentLanguage, tests: tests)
                 .tabItem {
                     Label(Localization.somaTranslate("tab_brain", language: currentLanguage), systemImage: "brain.head.profile")
                 }
