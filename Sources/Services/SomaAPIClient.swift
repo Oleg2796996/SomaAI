@@ -123,13 +123,85 @@ final class SomaAPIClient {
     /// `structureText`. Caller gets back a flat, normalised payload that
     /// the UI can directly map to `MedicalDocument`.
     func processDocument(_ text: String) async throws -> SomaExtractionResponse {
-        // Step 1: classify
-        let classification = try await classifyDocument(text)
+        // Step 1: classify — multi-vote on head/mid/tail to defeat
+        // OCR-мусор in the first ~200 chars (изосерология заголовок vs
+        // narrative header ниже по тексту).
+        let classification = try await smartClassify(text)
         let docType = DocumentType(rawValue: classification.type) ?? .unknown
-        // Step 2: extract (type-aware)
+        // Step 2: extract (type-aware) — full text, the extractor
+        // handles noise; the classifier only needs the right window.
         let extraction = try await extractDocument(text, type: docType)
         // Step 3: validate + normalise
         return validate(extraction: extraction, classification: classification)
+    }
+
+    // MARK: Classification pre-processing + multi-vote
+
+    /// Clean OCR garbage that misleads the LLM classifier. The biggest
+    /// offenders in Russian medical scans are:
+    ///   - isolated digits / page numbers ("934)", "714", "11:161")
+    ///   - duplicated header lines (the scanner stamps the same
+    ///     "КОНОВАЛОВ О. А. ИБ Nº 26714" 2–3 times per page)
+    ///   - short all-digit lines, e.g. "<\n934"
+    func preprocessForClassification(_ text: String) -> String {
+        let lines = text.components(separatedBy: .newlines)
+        var seen: [String: Int] = [:]
+        var out: [String] = []
+        for raw in lines {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            // Drop lines that are pure digits / pure digit+digit+digit+punct.
+            let digitCount = line.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }.count
+            if digitCount >= max(3, line.count - 2) && line.count < 16 { continue }
+            // Drop very short all-symbolic lines like "<", "•••".
+            if line.count <= 3 && line.unicodeScalars.allSatisfy({ !CharacterSet.letters.contains($0) }) { continue }
+            // Dedup near-identical lines (allow 2 copies, drop the 3rd+).
+            let key = String(line.prefix(40)).lowercased()
+            seen[key, default: 0] += 1
+            if (seen[key] ?? 0) > 2 { continue }
+            out.append(line)
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// Three sample windows of the (preprocessed) text. The LLM sees
+    /// only the relevant slice. We pick the slice whose majority vote
+    /// is strongest — this prevents the "first 200 chars are изосерология,
+    /// the rest is эпикриз" trap that confuses a single-pass classifier.
+    func smartClassify(_ text: String) async throws -> SomaClassifyResponse {
+        let cleaned = preprocessForClassification(text)
+        // If cleaning killed most of the text, fall back to the raw text.
+        let body = cleaned.count > 200 ? cleaned : text
+        let length = body.count
+        let headEnd = min(1500, length)
+        let tailStart = max(0, length - 1500)
+        let midStart = length / 3
+        let midEnd = min(length, midStart + 1500)
+        let head = String(body.prefix(headEnd))
+        let tail = String(body.suffix(length - tailStart))
+        let mid = String(body[body.index(body.startIndex, offsetBy: midStart)..<body.index(body.startIndex, offsetBy: midEnd)])
+
+        async let headVote = classifyDocument(head)
+        let h = try await headVote
+        let m = try await classifyDocument(mid)
+        let t = try await classifyDocument(tail)
+        print("[SomaAI] smartClassify votes: head=\(h.type)@\(h.confidence) mid=\(m.type)@\(m.confidence) tail=\(t.type)@\(t.confidence)")
+
+        // Tally: count types, pick the one with the highest sum-of-confidence.
+        var scores: [String: Double] = [:]
+        for v in [h, m, t] {
+            scores[v.type, default: 0] += Double(v.confidence)
+        }
+        // Russian выписные эпикризы put "Эпикриз выписной" in the title/footer,
+        // so the tail slice almost always wins. Weight the tail ×1.3.
+        scores[t.type, default: 0] *= 1.3
+        let winner = scores.max(by: { $0.value < $1.value }) ?? (h.type, 0)
+        let type = winner.key
+        let confidence = min(1.0, max(h.confidence, m.confidence, t.confidence))
+        // Pick the organisation from the slice that reported the most
+        // detail. Prefer head, then tail.
+        let org = h.organization ?? t.organization ?? m.organization
+        return SomaClassifyResponse(type: type, confidence: confidence, organization: org)
     }
 
     // MARK: Step 1 — classify
@@ -408,7 +480,23 @@ Classification rules (RU + EN, case-insensitive):
   - vaccination      : "прививка", "вакцинация", vaccine name + date + lot.
   - unknown          : none of the above matches confidently.
 
-Tie-breaker: if BOTH lab values AND clinical notes (diagnosis, recommendations) are present, prefer the type that dominates by character count.
+EMBEDDED DATA RULE (very important for Russian выписные эпикризы):
+  If the text contains BOTH a clinical narrative header
+  (эпикриз, выписной эпикриз, протокол операции, осмотр, консультация, консилиум,
+   выписка, рекомендации, диагноз, жалобы, анамнез, лечение, операции)
+  AND embedded lab-style data
+  (Изосерология, Анализ крови, ОАК, ОАМ, биохимия, группа крови, Rh, резус-фактор,
+   фенотип, антиген, антитела, лейкоциты, гемоглобин, эритроциты, глюкоза, холестерин),
+  classify as the CLINICAL document (epicrisis / dischargeSummary / consultation).
+  The lab data is a sub-section, not the document type.
+  Set confidence >= 0.7 in that case.
+
+Tie-breaker: if BOTH lab values AND clinical notes (diagnosis, recommendations) are present AND no narrative header is visible, prefer the type that dominates by character count.
+
+RECOGNITION UNCERTAINTY:
+  - If the OCR is very short (< 80 chars) or has many junk lines (duplicated headers, isolated digits like "934)", "714", "11:161"), return confidence <= 0.4.
+  - If you see a strong narrative header (Эпикриз, Выписка, Осмотр) somewhere in the first 30% of the text, treat the document as that type with confidence >= 0.7 even if the rest is messy.
+  - Return confidence = 0.0 ONLY if you genuinely cannot pick a type.
 
 If the OCR text is too short (< 50 chars) or unreadable, return type="unknown" and confidence=0.0.
 """
