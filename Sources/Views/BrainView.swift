@@ -5,6 +5,8 @@ struct BrainView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \LabTest.date, order: .reverse) private var tests: [LabTest]
 
+    let language: String
+
     @State private var messages: [ChatMessage] = [
         ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: "English"))
     ]
@@ -40,7 +42,7 @@ struct BrainView: View {
 
                 VStack(spacing: 8) {
                     HStack(spacing: 12) {
-                        TextField(Localization.somaTranslate("brain_input_placeholder", language: currentLanguage), text: $inputText, axis: .vertical)
+                        TextField(Localization.somaTranslate("brain_input_placeholder", language: language), text: $inputText, axis: .vertical)
                             .textFieldStyle(.roundedBorder)
                             .disabled(isLoading)
 
@@ -56,7 +58,7 @@ struct BrainView: View {
                         .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                     }
 
-                    Text(Localization.somaTranslate("brain_disclaimer_footer", language: currentLanguage))
+                    Text(Localization.somaTranslate("brain_disclaimer_footer", language: language))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
