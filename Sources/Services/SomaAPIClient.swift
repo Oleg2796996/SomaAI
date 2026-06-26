@@ -149,8 +149,8 @@ final class SomaAPIClient {
                 }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-                print("[SomaAI] processDocument overall TIMEOUT after 20s — returning unknown fallback")
+                try? await Task.sleep(nanoseconds: 35_000_000_000)
+                print("[SomaAI] processDocument overall TIMEOUT after 35s — returning unknown fallback")
                 return SomaExtractionResponse(
                     type: DocumentType.unknown.rawValue,
                     date: nil, organization: nil, title: nil,
@@ -342,7 +342,7 @@ final class SomaAPIClient {
             content = try await withThrowingTaskGroup(of: String.self) { group in
                 group.addTask { try await self.sendChat(messages: messages, temperature: 0.0) }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: 12_000_000_000)
+                    try await Task.sleep(nanoseconds: 25_000_000_000)
                     throw CancellationError()
                 }
                 let first = try await group.next()!
@@ -364,23 +364,36 @@ final class SomaAPIClient {
             print("[SomaAI] extract type=\(type.rawValue) — content is not valid UTF-8, returning raw text fallback")
             return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.3, markers: nil, medications: nil, sections: [SomaSection(key: "Текст", value: text, order: 0)])
         }
-        do {
-            return try JSONDecoder().decode(SomaExtractionResponse.self, from: data)
-        } catch {
-            print("[SomaAI] extract decode failed for type \(type.rawValue): \(error.localizedDescription)")
-            print("[SomaAI] full content was: \(content.prefix(2000))")
-            // Fallback: do NOT discard the OCR. Return the raw text inside
-            // a single section so the verification UI can show it and the
-            // user can manually re-classify or re-extract. confidence=0.3
-            // is high enough to not trigger the 'LLM not confident'
-            // warning but low enough that the user knows it was a fallback.
-            let truncated = text.count > 3000 ? String(text.prefix(3000)) + "…[truncated]" : text
-            return SomaExtractionResponse(
-                type: type.rawValue, date: nil, organization: nil, title: nil,
-                confidence: 0.3, markers: nil, medications: nil,
-                sections: [SomaSection(key: "Сырой текст", value: truncated, order: 0)]
-            )
+        // First try: direct decode (the happy path).
+        if let direct = try? JSONDecoder().decode(SomaExtractionResponse.self, from: data) {
+            return direct
         }
+        // Second try: extract the first { … } block from the response. Some
+        // models wrap JSON in "Here is the result: {…}" prose. We grab the
+        // first { and the last } and try decoding that slice.
+        if let firstBrace = content.firstIndex(of: "{"),
+           let lastBrace = content.lastIndex(of: "}"),
+           firstBrace < lastBrace {
+            let slice = String(content[firstBrace...lastBrace])
+            if let sliceData = slice.data(using: .utf8),
+               let repaired = try? JSONDecoder().decode(SomaExtractionResponse.self, from: sliceData) {
+                print("[SomaAI] extract type=\(type.rawValue) — JSON repair succeeded (\(slice.count) chars)")
+                return repaired
+            }
+        }
+        // Both attempts failed — fall back to raw text so the user can save.
+        print("[SomaAI] extract decode failed for type \(type.rawValue). Raw content head: \(content.prefix(2000))")
+        // Fallback: do NOT discard the OCR. Return the raw text inside
+        // a single section so the verification UI can show it and the
+        // user can manually re-classify or re-extract. confidence=0.3
+        // is high enough to not trigger the 'LLM not confident'
+        // warning but low enough that the user knows it was a fallback.
+        let truncated = text.count > 3000 ? String(text.prefix(3000)) + "…[truncated]" : text
+        return SomaExtractionResponse(
+            type: type.rawValue, date: nil, organization: nil, title: nil,
+            confidence: 0.3, markers: nil, medications: nil,
+            sections: [SomaSection(key: "Сырой текст", value: truncated, order: 0)]
+        )
     }
 
     // MARK: Step 3 — validate
