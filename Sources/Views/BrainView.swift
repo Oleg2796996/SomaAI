@@ -9,10 +9,16 @@ struct BrainView: View {
 
     private var tests: [LabTest] { persistedTests.isEmpty ? passedInTests : persistedTests }
 
+    /// Use the view's own language, falling back to Localization default.
+    private var effectiveLanguage: String {
+        // The view is given a language by MainTabView; just use it.
+        return language
+    }
+
     let language: String
 
     @State private var messages: [ChatMessage] = [
-        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: "English"))
+        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: Localization.preferredLanguage))
     ]
     @State private var inputText: String = ""
     @State private var isLoading = false
@@ -115,7 +121,7 @@ struct BrainView: View {
         Task {
             do {
                 let context = buildContextFragments(for: question)
-                let reply = try await SomaAPIClient.shared.askConsultant(question, context: context)
+                let reply = try await SomaAPIClient.shared.askConsultant(question, context: context, language: language)
                 await MainActor.run {
                     let assistantMessage = ChatMessage(role: .assistant, text: reply, source: .cloud)
                     messages.append(assistantMessage)

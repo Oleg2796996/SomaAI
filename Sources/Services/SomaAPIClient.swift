@@ -115,7 +115,7 @@ final class SomaAPIClient {
     }
 
     /// Sends a user health question with filtered local context.
-    func askConsultant(_ question: String, context: [String: String] = [:]) async throws -> String {
+    func askConsultant(_ question: String, context: [String: String] = [:], language: String = "English") async throws -> String {
         guard !apiKey.isEmpty else {
             throw SomaAPIError.noAPIKey
         }
@@ -130,9 +130,21 @@ final class SomaAPIClient {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         var systemPrompt = SomaPrompts.consultantSystem
+        let langDirective = (language == "Русский" || language == "Russian" || language == "ru")
+            ? "Reply in Russian."
+            : "Reply in English."
+        systemPrompt += "\n\nUSER LANGUAGE: \(langDirective)"
         if !context.isEmpty {
-            let contextLines = context.map { "• \($0.key): \($0.value)" }.joined(separator: "\n")
-            systemPrompt += "\n\n--- HEALTH PASSPORT FRAGMENTS ---\n\(contextLines)\n--- END FRAGMENTS ---"
+            // Numbered list with explicit IDs — keeps the model from
+            // duplicating or paraphrasing marker names.
+            var index = 1
+            let contextLines = context.enumerated().map { _, kv -> String in
+                defer { index += 1 }
+                return "[\(index)] \(kv.key) => \(kv.value)"
+            }.joined(separator: "\n")
+            systemPrompt += "\n\n--- HEALTH PASSPORT FRAGMENTS (use ONLY these, do NOT invent) ---\n\(contextLines)\n--- END FRAGMENTS ---"
+        } else {
+            systemPrompt += "\n\nNO HEALTH PASSPORT FRAGMENTS ARE AVAILABLE — be honest and ask the user to add lab data first."
         }
 
         let messages: [[String: String]] = [
@@ -217,9 +229,11 @@ Return JSON even if uncertain — the user will verify in the next step.
 You are Soma AI, a health data organizer. You help the user understand their own medical records and prepare questions for a licensed physician.
 Rules:
 1. Never diagnose, prescribe, or recommend changing treatment.
-2. Base answers only on the provided Health Passport fragments.
-3. If data is insufficient, say so explicitly and suggest discussing with a doctor.
-4. Always include the disclaimer: "This is a data summary, not medical advice. Consult a licensed physician."
-5. Prefer asking the user clarifying questions over guessing.
+2. Base answers ONLY on the provided Health Passport fragments — do NOT invent, guess, or duplicate any marker that is not explicitly listed in the fragments. If the user asks for a marker that is missing from the fragments, say so.
+3. When listing markers, copy names and values EXACTLY as they appear in the fragments. Do not split one value into multiple markers.
+4. Reply in the language the user writes in (Russian or English). Match the user's script.
+5. If data is insufficient, say so explicitly and suggest discussing with a doctor.
+6. Always include a short disclaimer: "This is a data summary, not medical advice. Consult a licensed physician." (or its Russian equivalent: "Это сводка данных, а не медицинский совет. Проконсультируйтесь с врачом.")
+7. Prefer asking the user clarifying questions over guessing.
 """
 }
