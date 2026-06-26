@@ -63,9 +63,22 @@ struct SomaAPISettings: Codable {
     var baseURL: String
     var modelName: String
 
+    /// Wormsoft model alias. Wormsoft rotates through a list of upstream
+    /// models per alias — the first one that answers gets used.
+    ///   agent/low     → qwen3-vl → qwen3.5:235b → qwen3.6:35b → deepseek-v3.1
+    ///                  Fastest, qwen3-vl usually responds in 3-5s.
+    ///   agent/medium  → gemma4:31b → qwen3.6:27b → qwen3.6:35b → minimax-m2.7
+    ///                  Same chain as code/medium but routed via the 'agent'
+    ///                  pool which is less loaded than 'code' at peak hours.
+    ///   code/medium   → gemma4:31b → qwen3.6:27b → minimax-m2.7
+    ///                  Was the original default — gemma4 was timing out at
+    ///                  25-35s during the user's 2026-06-26 testing.
+    /// We pick agent/low here so the user gets a fast qwen3-vl response
+    /// for short clinical extraction. If quality drops, change to
+    /// 'wormsoft/agent/medium' or 'wormsoft/agent/high'.
     static let defaultSettings = SomaAPISettings(
         baseURL: "https://ai.wormsoft.ru/api/gpt",
-        modelName: "wormsoft/code/medium"
+        modelName: "wormsoft/agent/low"
     )
 
     static func load() -> SomaAPISettings {
