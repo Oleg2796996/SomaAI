@@ -167,7 +167,7 @@ final class SomaAPIClient {
                     let classification = try await self.smartClassify(body)
                     let docType = DocumentType(rawValue: classification.type) ?? .unknown
                     let extraction = try await self.extractDocument(body, type: docType)
-                    return self.validate(extraction: extraction, classification: classification)
+                    return self.validate(extraction: extraction, classification: classification, expectedType: docType)
                 } catch {
                     print("[SomaAI] processDocument inner catch: \(error.localizedDescription) — trying LocalExtractor")
                     // Try local regex before falling back to raw text.
@@ -386,7 +386,7 @@ final class SomaAPIClient {
         case .labResult: prompt = SomaPrompts.labMarkerExtractor
         case .prescription: prompt = SomaPrompts.prescriptionExtractor
         case .epicrisis, .dischargeSummary, .consultation:
-            prompt = SomaPrompts.epicrisisExtractor
+            prompt = SomaPrompts.epicrisisExtractor(forType: type)
         case .referral: prompt = SomaPrompts.referralExtractor
         case .imagingReport: prompt = SomaPrompts.imagingExtractor
         case .vaccination: prompt = SomaPrompts.vaccinationExtractor
@@ -458,7 +458,7 @@ final class SomaAPIClient {
     /// Deterministic validation: removes duplicate markers, clamps
     /// confidence, picks the better organisation between classify and
     /// extract outputs, and defaults empty `markers` arrays to nil.
-    private func validate(extraction: SomaExtractionResponse, classification: SomaClassifyResponse) -> SomaExtractionResponse {
+    private func validate(extraction: SomaExtractionResponse, classification: SomaClassifyResponse, expectedType: DocumentType) -> SomaExtractionResponse {
         // 1. Deduplicate markers by name+value
         var seen = Set<String>()
         let deduped = extraction.markers?.filter { m in
@@ -475,8 +475,18 @@ final class SomaAPIClient {
         let meds = (extraction.medications?.isEmpty == false) ? extraction.medications : nil
         let secs = (extraction.sections?.isEmpty == false) ? extraction.sections : nil
         let marks = (deduped?.isEmpty == false) ? deduped : nil
+        // 5. Type override: smartClassify is the source of truth.
+        //    LLM often confuses 'Эпикриз выписной' (dischargeSummary)
+        //    with 'Эпикриз' (epicrisis) in the extract step, even when
+        //    we lock the prompt. Override back to what classify said
+        //    so the document is saved with the right type. The user
+        //    can still change it manually in the verification UI.
+        let finalType = expectedType.rawValue
+        if extraction.type != finalType {
+            print("[SomaAI] validate: LLM returned type='\(extraction.type)' but classify said '\(finalType)' — overriding")
+        }
         return SomaExtractionResponse(
-            type: extraction.type,
+            type: finalType,
             date: extraction.date,
             organization: org,
             title: extraction.title,
@@ -746,11 +756,45 @@ Rules:
 """
 
     /// Step 2 — epicrisis / consultation / discharge: free-form sections.
-    static let epicrisisExtractor = """
+    /// The `forType` parameter is the DocumentType we passed in based on
+    /// regexClassify + smartClassify. We lock the LLM to use exactly that
+    /// type in its JSON response — otherwise the LLM often confuses
+    /// 'Эпикриз выписной' (Discharge) with 'Эпикриз' (general Epicrisis),
+    /// making a dischargeSummary document get saved as epicrisis.
+    /// If smartClassify was wrong, the user can correct it manually in
+    /// the verification UI; we don't want LLM to silently override it.
+    static func epicrisisExtractor(forType: DocumentType) -> String {
+        let allowedType = forType.rawValue
+        let typeRule: String
+        switch forType {
+        case .dischargeSummary:
+            typeRule = """
+            You MUST set "type": "dischargeSummary". The document is a
+            discharge summary (выписной эпикриз / выписка). DO NOT set
+            type to "epicrisis" even though the word 'эпикриз' appears
+            in the document title — 'выписной эпикриз' is the Russian
+            name for a discharge summary, not a general epicrisis.
+            """
+        case .epicrisis:
+            typeRule = """
+            You MUST set "type": "epicrisis". The document is a general
+            epicrisis (stage-of-treatment summary). DO NOT set type to
+            "dischargeSummary" — only set that if you see 'выписной',
+            'выписка', or 'Discharge summary'.
+            """
+        case .consultation:
+            typeRule = """
+            You MUST set "type": "consultation". The document is a
+            consultation / specialist visit (консультация / осмотр).
+            """
+        default:
+            typeRule = "Set type to one of: epicrisis, consultation, dischargeSummary."
+        }
+        return """
 You are a strict medical record parser. Extract the named clinical sections from the OCR text.
 Return ONLY this JSON (no markdown):
 {
-  "type": "<epicrisis|consultation|dischargeSummary>",
+  "type": "\(allowedType)",
   "date": "YYYY-MM-DD or null",
   "organization": "clinic name or null",
   "title": "short title or null",
@@ -760,7 +804,10 @@ Return ONLY this JSON (no markdown):
   ]
 }
 
-CRITICAL: Never return an empty sections array if the OCR text is substantial (>200 chars).
+CRITICAL TYPE RULE:
+\(typeRule)
+
+CRITICAL CONTENT RULE: Never return an empty sections array if the OCR text is substantial (>200 chars).
 If the document is a hybrid (e.g. выписной эпикриз with embedded Изосерология block, or a
 clinical narrative that starts with a lab-result header), ALWAYS extract the clinical
 content into the matching section keys below. Embedded lab values, blood-group data, or
@@ -791,6 +838,7 @@ Rules:
   - 'order' is the reading order: 0, 1, 2, ...
   - Scan the WHOLE text. Do not stop at the first sub-section.
 """
+    }
 
     /// Step 2 — referral: target + required tests.
     static let referralExtractor = """
