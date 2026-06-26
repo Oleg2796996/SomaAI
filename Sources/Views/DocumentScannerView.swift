@@ -5,29 +5,41 @@ import VisionKit
 /// native scanner does auto-crop, perspective correction and multi-page
 /// capture for free. Replaces the bare UIImagePickerController which
 /// had none of those.
+///
+/// `UIViewControllerRepresentable` protocol methods are public, so
+/// the wrapping struct + its `Coordinator` must be public too. All
+/// inherited public requirements are marked `public` explicitly here.
 public struct DocumentScannerView: UIViewControllerRepresentable {
     @Binding var scannedImages: [UIImage]
     var onError: (Error) -> Void = { _ in }
     var onCancel: () -> Void = {}
 
-    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+    public init(scannedImages: Binding<[UIImage]>,
+                onError: @escaping (Error) -> Void = { _ in },
+                onCancel: @escaping () -> Void = {}) {
+        self._scannedImages = scannedImages
+        self.onError = onError
+        self.onCancel = onCancel
+    }
+
+    public func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
         let scanner = VNDocumentCameraViewController()
         scanner.delegate = context.coordinator
         return scanner
     }
 
-    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
+    public func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
 
-    func makeCoordinator() -> Coordinator {
+    public func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
-    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+    public final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
         let parent: DocumentScannerView
-        init(_ parent: DocumentScannerView) { self.parent = parent }
+        public init(_ parent: DocumentScannerView) { self.parent = parent }
 
-        func documentCameraViewController(_ controller: VNDocumentCameraViewController,
-                                          didFinishWith scan: VNDocumentCameraScan) {
+        public func documentCameraViewController(_ controller: VNDocumentCameraViewController,
+                                                 didFinishWith scan: VNDocumentCameraScan) {
             var imgs: [UIImage] = []
             for i in 0..<scan.pageCount {
                 imgs.append(scan.imageOfPage(at: i))
@@ -35,12 +47,12 @@ public struct DocumentScannerView: UIViewControllerRepresentable {
             parent.scannedImages = imgs
         }
 
-        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
+        public func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
             parent.onCancel()
         }
 
-        func documentCameraViewController(_ controller: VNDocumentCameraViewController,
-                                          didFailWithError error: Error) {
+        public func documentCameraViewController(_ controller: VNDocumentCameraViewController,
+                                                 didFailWithError error: Error) {
             parent.onError(error)
         }
     }

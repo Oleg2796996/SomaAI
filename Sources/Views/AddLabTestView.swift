@@ -48,35 +48,14 @@ struct AddLabTestView: View {
                 }
 
                 Section {
-                    VStack(spacing: 12) {
-                        Button(action: { isShowingScanner = true }) {
-                            Label(Localization.somaTranslate("button_scan", language: language), systemImage: "doc.viewfinder")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isProcessing)
-
-                        Button(action: { isShowingCamera = true }) {
-                            Label(Localization.somaTranslate("button_camera", language: language), systemImage: "camera.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isProcessing)
-
-                        PhotosPicker(selection: $selectedItems, matching: .images) {
-                            Label(Localization.somaTranslate("button_photos", language: language), systemImage: "photo.on.rectangle.angled")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isProcessing)
-
-                        Button(action: { isImportingPDF = true }) {
-                            Label(Localization.somaTranslate("button_pdf", language: language), systemImage: "doc.text.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(isProcessing)
-                    }
+                    ImportButtonsView(
+                        isProcessing: isProcessing,
+                        onScan: { isShowingScanner = true },
+                        onCamera: { isShowingCamera = true },
+                        photosSelection: $selectedItems,
+                        onPDF: { isImportingPDF = true },
+                        language: language
+                    )
                 }
 
                 Section {
@@ -430,5 +409,50 @@ struct AddLabTestView: View {
             print("[SomaAI] Save error: \(error)")
         }
         dismiss()
+    }
+}
+
+/// Extracted into its own struct because the 4-button stack inside
+/// `AddLabTestView.body` was hitting Swift's "unable to type-check
+/// this expression in reasonable time" diagnostic. Smaller subviews
+/// give the type checker an easy time.
+private struct ImportButtonsView: View {
+    let isProcessing: Bool
+    let onScan: () -> Void
+    let onCamera: () -> Void
+    @Binding var photosSelection: [PhotosPickerItem]
+    let onPDF: () -> Void
+    let language: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Button(action: onScan) {
+                Label(Localization.somaTranslate("button_scan", language: language), systemImage: "doc.viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isProcessing)
+
+            Button(action: onCamera) {
+                Label(Localization.somaTranslate("button_camera", language: language), systemImage: "camera.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isProcessing)
+
+            PhotosPicker(selection: $photosSelection, matching: .images) {
+                Label(Localization.somaTranslate("button_photos", language: language), systemImage: "photo.on.rectangle.angled")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isProcessing)
+
+            Button(action: onPDF) {
+                Label(Localization.somaTranslate("button_pdf", language: language), systemImage: "doc.text.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isProcessing)
+        }
     }
 }

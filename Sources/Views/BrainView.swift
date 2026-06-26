@@ -18,7 +18,7 @@ struct BrainView: View {
     let language: String
 
     @State private var messages: [ChatMessage] = [
-        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: Localization.preferredLanguage))
+        ChatMessage(role: .assistant, text: Localization.somaTranslate("brain_welcome_message", language: language))
     ]
     @State private var inputText: String = ""
     @State private var isLoading = false
