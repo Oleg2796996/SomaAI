@@ -142,13 +142,25 @@ final class SomaAPIClient {
     /// `structureText`. Caller gets back a flat, normalised payload that
     /// the UI can directly map to `MedicalDocument`.
     func processDocument(_ text: String) async throws -> SomaExtractionResponse {
-        // Overall 30s guard around the whole pipeline. If the LLM
+        // Overall 50s guard around the whole pipeline. If the LLM
         // endpoint hangs on any of the 4 calls (classify×3 + extract
         // + validate), we return unknown with raw sections instead of
         // leaving the user staring at a frozen spinner. The verification
         // UI knows how to render .unknown + raw text.
-        return await withTaskGroup(of: SomaExtractionResponse.self) { group in
-            group.addTask {
+        //
+        // Race-condition fix: we use TWO task groups instead of one.
+        //  - Inner pipeline task runs to completion (up to ~50s with
+        //    all the per-call timeouts).
+        //  - Outer sleep task races against it but DOES NOT return its
+        //    result — it just signals the timer fired.
+        // If the inner pipeline finishes first (normal case), we cancel
+        // the sleep task. If the sleep task finishes first, we cancel
+        // the pipeline. In both cases we return the PIPELINE result, not
+        // the timer result — this prevents the bug where the timer
+        // raced past the LocalExtractor fallback and overrode 9 valid
+        // sections with an empty 'unknown' result.
+        return await withTaskGroup(of: SomaExtractionResponse?.self) { outerGroup in
+            outerGroup.addTask {
                 do {
                     let cleaned = self.preprocessForClassification(text)
                     let body = cleaned.count > 200 ? cleaned : text
@@ -157,7 +169,13 @@ final class SomaAPIClient {
                     let extraction = try await self.extractDocument(body, type: docType)
                     return self.validate(extraction: extraction, classification: classification)
                 } catch {
-                    print("[SomaAI] processDocument overall catch: \(error.localizedDescription)")
+                    print("[SomaAI] processDocument inner catch: \(error.localizedDescription) — trying LocalExtractor")
+                    // Try local regex before falling back to raw text.
+                    let local = LocalExtractor.extract(text, type: .unknown)
+                    if local.sections?.isEmpty == false || local.markers?.isEmpty == false || local.medications?.isEmpty == false {
+                        print("[SomaAI] processDocument LocalExtractor sections=\(local.sections?.count ?? 0) conf=\(local.confidence)")
+                        return local
+                    }
                     return SomaExtractionResponse(
                         type: DocumentType.unknown.rawValue,
                         date: nil, organization: nil, title: nil,
@@ -167,20 +185,40 @@ final class SomaAPIClient {
                     )
                 }
             }
-            group.addTask {
+            outerGroup.addTask {
                 try? await Task.sleep(nanoseconds: 50_000_000_000)
-                print("[SomaAI] processDocument overall TIMEOUT after 50s — returning unknown fallback")
-                return SomaExtractionResponse(
-                    type: DocumentType.unknown.rawValue,
-                    date: nil, organization: nil, title: nil,
-                    confidence: 0.0,
-                    markers: nil, medications: nil,
-                    sections: [SomaSection(key: "Текст", value: text, order: 0)]
-                )
+                print("[SomaAI] processDocument overall 50s reached — cancelling pipeline")
+                return nil  // signal timer fired, but DO NOT return a result
             }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
+            // Wait for the first non-nil result (the pipeline finished).
+            var final: SomaExtractionResponse?
+            for await r in outerGroup {
+                if let r = r {
+                    final = r
+                    outerGroup.cancelAll()
+                    break
+                }
+                // r == nil means the timer fired. Keep waiting — the pipeline
+                // is probably about to finish (LLM has 25s timeout + 50ms
+                // LocalExtractor). Give it up to 5 more seconds before giving up.
+                print("[SomaAI] processDocument timer fired but no pipeline result yet — waiting 5s more")
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                outerGroup.cancelAll()
+                break
+            }
+            // Drain: read any leftover result (the pipeline may finish
+            // after the timer fires, but we want THAT result not the
+            // timer's 'unknown').
+            for await r in outerGroup {
+                if let r = r, final == nil { final = r }
+            }
+            return final ?? SomaExtractionResponse(
+                type: DocumentType.unknown.rawValue,
+                date: nil, organization: nil, title: nil,
+                confidence: 0.0,
+                markers: nil, medications: nil,
+                sections: [SomaSection(key: "Текст", value: text, order: 0)]
+            )
         }
     }
 
