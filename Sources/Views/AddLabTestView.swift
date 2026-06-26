@@ -146,7 +146,7 @@ struct AddLabTestView: View {
             }
             .sheet(isPresented: $showingVerification) {
                 VerificationView(
-                    documentType: documentType,
+                    documentType: $documentType,
                     pendingExtraction: pendingExtraction,
                     markers: $pendingMarkers,
                     medications: $pendingMedications,
@@ -287,12 +287,30 @@ struct AddLabTestView: View {
                     pendingMarkers = localRegexParse(ocr)
                     print("[SomaAI] Regex fallback extracted \(pendingMarkers.count) markers")
                 }
+                // For unknown type, seed a single section with the raw text
+                // so the user can edit it in the verification sheet and
+                // no data is silently lost.
+                if documentType == .unknown, pendingSections.isEmpty {
+                    let isRU = (language == "Русский" || language == "Russian")
+                    pendingSections = [SomaSection(key: isRU ? "Текст" : "Text", value: ocr, order: 0)]
+                }
             } catch {
+                // Pipeline failed: still let the user save the document
+                // as unknown with the raw OCR text. We do not want to
+                // throw away the photo they just scanned.
                 print("[SomaAI] 3-step pipeline error: \(error.localizedDescription)")
-                apiError = "LLM error: \(error.localizedDescription)"
-                showingErrorAlert = true
-                isProcessing = false
-                return
+                print("[SomaAI] Fallback: showing verification as 'unknown' with raw OCR (\(ocr.count) chars)")
+                documentType = .unknown
+                pendingMarkers = []
+                pendingMedications = []
+                let isRU = (language == "Русский" || language == "Russian")
+                pendingSections = [SomaSection(key: isRU ? "Текст" : "Text", value: ocr, order: 0)]
+                if testName.trimmingCharacters(in: .whitespaces).isEmpty {
+                    testName = isRU ? "Документ от \(date.formatted(date: .abbreviated, time: .omitted))" : "Document \(date.formatted(date: .abbreviated, time: .omitted))"
+                }
+                // Non-fatal warning, no modal alert — the verification
+                // sheet will show the unknown UI which is more useful
+                // than an error popup.
             }
 
             showingVerification = true

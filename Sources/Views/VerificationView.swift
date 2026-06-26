@@ -6,7 +6,7 @@ import SwiftUI
 /// final document is saved as a `MedicalDocument` (LabTest) with the
 /// correct documentType + the right child relationships.
 struct VerificationView: View {
-    let documentType: DocumentType
+    @Binding var documentType: DocumentType
     let pendingExtraction: SomaExtractionResponse?
 
     @Binding var markers: [SomaMarker]
@@ -266,30 +266,33 @@ struct VerificationView: View {
                          : "Could not auto-detect the document type.")
                         .font(.headline)
                     Text(isRU
-                         ? "Документ будет сохранён как «Документ» с сырым текстом. Вы можете отредактировать его позже."
-                         : "The document will be saved as 'Document' with raw text. You can edit it later.")
+                         ? "Ниже — сырой текст из OCR. Отредактируйте или сохраните как есть."
+                         : "Below is the raw OCR text. Edit it or save as is.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
-            // For unknown we still let the user dump the raw OCR text
-            // into a single section so the data isn't lost.
-            if sections.isEmpty {
-                Section(header: Text(isRU ? "Сырой текст" : "Raw Text")) {
-                    TextField(isRU ? "Текст" : "Body", text: Binding(
-                        get: { sections.first?.value ?? "" },
-                        set: { newValue in
-                            if sections.isEmpty {
-                                sections.append(SomaSection(key: isRU ? "Текст" : "Body", value: newValue, order: 0))
-                            } else {
-                                sections[0].value = newValue
-                            }
-                        }
-                    ), axis: .vertical)
-                    .lineLimit(4...20)
+            // Raw OCR goes into a single, large editable text section.
+            Section(header: Text(isRU ? "Сырой текст" : "Raw Text")) {
+                if sections.isEmpty {
+                    Text(isRU ? "Текст отсутствует" : "No text")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    TextField(isRU ? "Текст" : "Text", text: $sections[0].value, axis: .vertical)
+                        .lineLimit(4...30)
+                        .font(.body)
                 }
-            } else {
-                structuredFieldsBody
+            }
+            // Let the user tag what kind of document they think this is
+            // by picking a type from the menu. Falls back to .unknown.
+            Section(header: Text(isRU ? "Тип документа" : "Document type")) {
+                Picker(isRU ? "Тип" : "Type", selection: $documentType) {
+                    ForEach(DocumentType.allCases, id: \.self) { dt in
+                        Label(dt.displayNameRU, systemImage: dt.iconName).tag(dt)
+                    }
+                }
+                .pickerStyle(.menu)
             }
         }
     }

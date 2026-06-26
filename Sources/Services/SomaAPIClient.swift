@@ -142,6 +142,8 @@ final class SomaAPIClient {
             ["role": "user", "content": text]
         ]
         let content = try await sendChat(messages: messages, temperature: 0.0)
+        let preview = String(content.prefix(400))
+        print("[SomaAI] classify raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
             return SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
         }
@@ -149,6 +151,7 @@ final class SomaAPIClient {
             return try JSONDecoder().decode(SomaClassifyResponse.self, from: data)
         } catch {
             print("[SomaAI] classify decode failed: \(error.localizedDescription)")
+            print("[SomaAI] full content was: \(content)")
             return SomaClassifyResponse(type: DocumentType.unknown.rawValue, confidence: 0.0, organization: nil)
         }
     }
@@ -175,13 +178,17 @@ final class SomaAPIClient {
             ["role": "user", "content": text]
         ]
         let content = try await sendChat(messages: messages, temperature: 0.1)
+        let preview = String(content.prefix(800))
+        print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
+            print("[SomaAI] extract type=\(type.rawValue) — content is not valid UTF-8")
             return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.0, markers: nil, medications: nil, sections: nil)
         }
         do {
             return try JSONDecoder().decode(SomaExtractionResponse.self, from: data)
         } catch {
             print("[SomaAI] extract decode failed for type \(type.rawValue): \(error.localizedDescription)")
+            print("[SomaAI] full content was: \(content)")
             return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.0, markers: nil, medications: nil, sections: nil)
         }
     }
