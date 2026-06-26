@@ -186,29 +186,31 @@ final class SomaAPIClient {
                 }
             }
             outerGroup.addTask {
-                try? await Task.sleep(nanoseconds: 50_000_000_000)
-                print("[SomaAI] processDocument overall 50s reached — cancelling pipeline")
+                try? await Task.sleep(nanoseconds: 75_000_000_000)
+                print("[SomaAI] processDocument overall 75s reached — cancelling pipeline")
                 return nil  // signal timer fired, but DO NOT return a result
             }
             // Wait for the first non-nil result (the pipeline finished).
             var final: SomaExtractionResponse?
+            // The pipeline task and the timer task both write to outerGroup.
+            // We want the pipeline result. Iterate until we get one.
+            // DO NOT break on nil (timer fired) — the pipeline may still
+            // be running and about to deliver a real result. The timer
+            // task just signals that we SHOULD have seen the pipeline by
+            // now; it doesn't replace the pipeline's output.
             for await r in outerGroup {
                 if let r = r {
                     final = r
-                    outerGroup.cancelAll()
                     break
                 }
-                // r == nil means the timer fired. Keep waiting — the pipeline
-                // is probably about to finish (LLM has 25s timeout + 50ms
-                // LocalExtractor). Give it up to 5 more seconds before giving up.
-                print("[SomaAI] processDocument timer fired but no pipeline result yet — waiting 5s more")
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-                outerGroup.cancelAll()
-                break
+                // r == nil — timer fired. Print a warning but keep waiting
+                // for the pipeline. The pipeline has its own 25s LLM
+                // timeout + LocalExtractor fallback, so it should finish
+                // within ~30s after the timer.
+                print("[SomaAI] processDocument 50s timer fired — waiting for pipeline to deliver (LocalExtractor or raw text fallback)")
             }
-            // Drain: read any leftover result (the pipeline may finish
-            // after the timer fires, but we want THAT result not the
-            // timer's 'unknown').
+            // Drain: read any leftover result the pipeline may have just
+            // produced (it can finish a few ms after the timer).
             for await r in outerGroup {
                 if let r = r, final == nil { final = r }
             }
