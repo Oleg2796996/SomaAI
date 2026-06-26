@@ -152,6 +152,8 @@ struct AddLabTestView: View {
         do {
             let text = try await performOCR(on: image)
             recognizedText = text
+            print("[SomaAI] OCR produced \(text.count) chars (single image)")
+            print("[SomaAI] OCR preview: \(String(text.prefix(400)))")
         } catch {
             apiError = "OCR failed: \(error.localizedDescription)"
             showingErrorAlert = true
@@ -191,6 +193,8 @@ struct AddLabTestView: View {
         }
 
         recognizedText = allText
+        print("[SomaAI] OCR produced \(allText.count) chars (image path)")
+        print("[SomaAI] OCR preview: \(String(allText.prefix(400)))")
     }
 
     private func handlePDFSelection(url: URL) async {
@@ -239,6 +243,8 @@ struct AddLabTestView: View {
         }
 
         recognizedText = allText
+        print("[SomaAI] OCR produced \(allText.count) chars (PDF path)")
+        print("[SomaAI] OCR preview: \(String(allText.prefix(400)))")
     }
 
     private func performOCR(on image: UIImage) async throws -> String {

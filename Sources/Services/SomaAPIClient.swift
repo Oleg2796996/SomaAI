@@ -212,17 +212,26 @@ enum SomaAPIError: LocalizedError {
 // MARK: - Prompts
 enum SomaPrompts {
     static let labMarkerExtractor = """
-You are a strict medical data parser. Extract lab markers from the raw OCR text and return ONLY a JSON object with a top-level key 'markers'.
+You are a strict medical data parser. Extract lab markers, lab values, prescriptions, antigens and phenotypes from the raw OCR text. Return ONLY a JSON object with a top-level key 'markers'.
 Each marker has: name (string, required), value (string, required), unit (string or null), referenceRange (string or null), flag (string: "High", "Low", or "Normal", or null).
 Do not output markdown, explanations, or any text outside the JSON.
 
-TYPICAL LAB MARKERS YOU SHOULD RECOGNIZE (RU + EN):
-Urine (Моча): цвет, прозрачность, pH, плотность/удельный вес (sg), белок (protein), глюкоза (glucose), кетоны (ketones), лейкоциты (leukocytes/WBC), эритроциты (erythrocytes/RBC), нитриты (nitrites), уробилиноген (urobilinogen), билирубин (bilirubin), слизь (mucus), бактерии (bacteria), эпителий (epithelium), цилиндры (casts), соли (salts/crystals).
-Blood (Кровь общий анализ / CBC): гемоглобин (Hb/HGB), эритроциты (RBC), гематокрит (HCT), лейкоциты (WBC), тромбоциты (PLT), MCV, MCH, MCHC, RDW, эозинофилы, базофилы, моноциты, лимфоциты, нейтрофилы, СОЭ (ESR).
-Biochemistry (Биохимия): глюкоза, мочевина, креатинин, билирубин общий/прямой, АЛТ, АСТ, общий белок, альбумин, холестерин общий, ЛПНП, ЛПВП, триглицериды.
+TYPICAL ITEMS YOU SHOULD RECOGNIZE (RU + EN):
+Lab values (urine + blood + biochemistry + immunology):
+  Моча/Urine: цвет, прозрачность, pH, плотность/удельный вес (sg), белок (protein), глюкоза (glucose), кетоны (ketones), лейкоциты (WBC), эритроциты (RBC), нитриты, уробилиноген, билирубин, слизь, бактерии, эпителий, цилиндры, соли/кристаллы, дрожжеподобные грибы.
+  Blood (CBC): гемоглобин (Hb), эритроциты (RBC), гематокрит (HCT), лейкоциты (WBC), тромбоциты (PLT), MCV, MCH, MCHC, RDW, эозинофилы, базофилы, моноциты, лимфоциты, нейтрофилы, СОЭ (ESR).
+  Biochemistry: глюкоза, мочевина, креатинин, билирубин общий/прямой, АЛТ, АСТ, общий белок, альбумин, холестерин, ЛПНП, ЛПВП, триглицериды, прокальцитонин, С-реактивный белок (CRP).
+  Immunology / phenotypes: антиген, антитело, фенотип, CD15/CD20/CD3, группа крови, резус-фактор, ИКПЛ, ИФА, ПЦР.
+Prescriptions (назначения, лекарства):
+  Препараты с дозой (mg, мг, мл, нг/мл, ЕД, таб, капли, пак, суппозитории) — цефазолин, детралекс, фитозилин, омепразол, кеторол, парацетамол, ибупрофен, панкреатин, лоперамид, дротаверин, но-шпа, эссенциале, фосфоглив и т.п.
+  Use category 'prescription' for the name prefix if you can, otherwise just put the drug name as 'name' and 'value' as the dose+unit.
 
-If a row is missing a value but has a name + reference range, still include it with value "—".
-Return JSON even if uncertain — the user will verify in the next step.
+Rules:
+  - If a row has name + value, include it. If only name, still include with value '—'.
+  - Do NOT collapse multiple values into one marker. One marker per row.
+  - Return JSON even if uncertain — the user will verify.
+  - The OCR text may be a long medical document (эпикриз, выписка, направление) — scan the WHOLE text, not just the first few lines.
+  - Look for drug names, doses, and lab values anywhere in the text.
 """
 
     static let consultantSystem = """
