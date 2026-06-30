@@ -487,7 +487,7 @@ final class SomaAPIClient {
         // Third try: manual regex extraction for markers specifically.
         // If JSONDecoder fails but we can extract marker JSON snippets via
         // regex, build a partial SomaExtractionResponse manually.
-        if let manual = manualMarkerExtraction(content, type: type) {
+        if let manual = Self.manualMarkerExtraction(content, type: type) {
             print("[SomaAI] extract type=\(type.rawValue) — manual regex extraction recovered \(manual.markers?.count ?? 0) markers")
             return manual
         }
