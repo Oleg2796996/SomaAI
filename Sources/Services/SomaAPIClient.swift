@@ -425,24 +425,52 @@ final class SomaAPIClient {
             ["role": "system", "content": prompt],
             ["role": "user", "content": text]
         ]
-        let content: String
-        do {
-            content = try await withThrowingTaskGroup(of: String.self) { group in
-                group.addTask { try await self.sendChat(messages: messages, temperature: 0.0) }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 25_000_000_000)
-                    throw CancellationError()
+        // Sprint 4.7: multi-model fallback chain.
+// Try primary model first; if it fails/times out, try a faster one,
+// then a more capable one. If all fail, fall back to LocalExtractor.
+// Models picked from scripts/bench.sh (19 available aliases).
+// Order rationale: medium (default) → low (faster) → high (more capable).
+        let modelChain = [
+            "wormsoft/code/medium",  // primary (current default)
+            "wormsoft/agent/low",    // faster fallback
+            "wormsoft/code/high",    // last resort (slower but capable)
+        ]
+        let perModelTimeoutNs: UInt64 = 10_000_000_000  // 10s per model
+        var content: String?
+        var lastError: Error?
+        var triedModels: [String] = []
+        for model in modelChain {
+            triedModels.append(model)
+            do {
+                let result = try await withThrowingTaskGroup(of: String.self) { group in
+                    group.addTask { try await self.sendChat(messages: messages, temperature: 0.0, model: model) }
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: perModelTimeoutNs)
+                        throw CancellationError()
+                    }
+                    let first = try await group.next()!
+                    group.cancelAll()
+                    return first
                 }
-                let first = try await group.next()!
-                group.cancelAll()
-                return first
+                content = result
+                if triedModels.count > 1 {
+                    print("[SomaAI] extract type=\(type.rawValue) recovered with model \(model) after \(triedModels.count - 1) failures")
+                }
+                break
+            } catch {
+                lastError = error
+                print("[SomaAI] extract type=\(type.rawValue) model \(model) failed: \(error.localizedDescription) — trying next")
+                continue
             }
-        } catch {
-            print("[SomaAI] extract type=\(type.rawValue) LLM TIMEOUT/error: \(error.localizedDescription) — falling back to LocalExtractor")
+        }
+        guard let finalContent = content else {
+            print("[SomaAI] extract type=\(type.rawValue) all \(modelChain.count) models failed — falling back to LocalExtractor")
             let local = LocalExtractor.extract(text, type: type)
             print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
             return local
         }
+        let contentForDecode = finalContent
+        let content = finalContent
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
@@ -554,20 +582,19 @@ final class SomaAPIClient {
     // MARK: Shared low-level chat call
 
     /// Single low-level LLM call. Used by every step of the pipeline.
-    private func sendChat(messages: [[String: String]], temperature: Double) async throws -> String {
+    private func sendChat(messages: [[String: String]], temperature: Double, model: String? = nil) async throws -> String {
         guard !apiKey.isEmpty else { throw SomaAPIError.noAPIKey }
         guard let url = URL(string: chatEndpoint) else { throw SomaAPIError.invalidEndpoint(chatEndpoint) }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        // Hard 20s timeout per HTTP call. The Wormsoft endpoint has been
-        // observed to hang for >60s on long prompts; we'd rather give up
-        // and let smartClassify()'s fail-open return unknown than freeze
-        // the UI.
-        request.timeoutInterval = 20
+        // Sprint 4.7: per-model timeout 10s. Combined with 3-model chain,
+        // max 30s for extract step (was 25s for one model).
+        request.timeoutInterval = 10
+        let chosenModel = model ?? settings.modelName
         let body: [String: Any] = [
-            "model": settings.modelName,
+            "model": chosenModel,
             "messages": messages,
             "temperature": temperature
         ]
