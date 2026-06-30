@@ -438,7 +438,7 @@ final class SomaAPIClient {
             "wormsoft/agent/low",    // qwen3-vl (vision), qwen3.5:235b, qwen3.6:35b, deepseek-v3.1
         ]
         let perModelTimeoutNs: UInt64 = 15_000_000_000  // 15s per model (45s total max, still < 75s overall)
-        var content: String?
+        var currentResponse: String?
         var lastError: Error?
         var triedModels: [String] = []
         for model in modelChain {
@@ -454,7 +454,7 @@ final class SomaAPIClient {
                     group.cancelAll()
                     return first
                 }
-                content = result
+                currentResponse = result
                 if triedModels.count > 1 {
                     print("[SomaAI] extract type=\(type.rawValue) recovered with model \(model) after \(triedModels.count - 1) failures")
                 }
@@ -465,7 +465,7 @@ final class SomaAPIClient {
                 continue
             }
         }
-        guard let finalContent = content else {
+        guard let finalContent = currentResponse else {
             print("[SomaAI] extract type=\(type.rawValue) all \(modelChain.count) models failed — falling back to LocalExtractor")
             let local = LocalExtractor.extract(text, type: type)
             print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
