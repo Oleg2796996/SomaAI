@@ -487,6 +487,10 @@ final class SomaAPIClient {
             ["role": "system", "content": prompt],
             ["role": "user", "content": text]
         ]
+
+        // Sprint 4.7i diagnostic: log FULL OCR text sent to LLM (truncated to 3000 chars to avoid log spam).
+        print("[SomaAI] extract FULL TEXT (\(text.count) chars) → LLM: \(String(text.prefix(3000)))")
+        ]
         // Sprint 4.7e: provider chain.
         // First try Wormsoft (3 models); if all fail AND OpenAI key is set,
         // try OpenAI (2 models). If everything fails, LocalExtractor.
@@ -494,7 +498,7 @@ final class SomaAPIClient {
         // Each provider call uses its own API key from Keychain.
         // OpenAI is silently skipped if its key is empty.
         let perProviderTimeoutNs: UInt64 = 15_000_000_000  // 15s per model
-        let providerChain: [APIProvider] = [.wormsoft, .openai]
+        let providerChain: [APIProvider] = [.openai]
         var triedProviders: [String] = []
         var currentResponse: String?
         // Sprint 4.7e: outer loop over providers, inner over each provider's model chain.
