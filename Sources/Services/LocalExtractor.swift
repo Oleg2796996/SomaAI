@@ -177,14 +177,27 @@ struct LocalExtractor {
     /// whitespace-separated tokens and contains a numeric value, build a
     /// SomaMarker. Skip lines that look like headers (end with ":") or
     /// are pure digits.
+    /// Sprint 4.9b: filters out OCR/field-label noise that should never
+    /// be treated as a marker (card numbers, page footers, "Стр. N", etc.).
     static func extractLabMarkers(_ text: String) -> [SomaMarker] {
         var markers: [SomaMarker] = []
         let lines = text.components(separatedBy: .newlines)
+        // Sprint 4.9b: blacklist of OCR/field-label prefixes that look like
+        // markers but are just page metadata.
+        let noisePrefixes: [String] = [
+            "№ ", "Nº", "№", "N°",  // card numbers
+            "Стр.", "стр.", "Page",  // page footers
+            "--- ",  // OCR debug headers
+            "Биоматериал:", "Заказчик:", "Отделение", "Врач:", "Адрес:",
+            "Дата рождения:", "Пол:", "Ф.И.О.:", "Доставка", "Результат клинического",
+        ]
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
             if trimmed.hasSuffix(":") { continue }       // header
             if trimmed.allSatisfy({ "0123456789.,-+()/- ".contains($0) }) { continue } // pure numeric
+            // Sprint 4.9b: skip noise prefixes
+            if noisePrefixes.contains(where: { trimmed.hasPrefix($0) }) { continue }
             // Split by 2+ spaces or tab (medical tables are usually aligned).
             let tokens = trimmed.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
                 .split(separator: " ")
@@ -202,6 +215,8 @@ struct LocalExtractor {
             let range: String? = tokens.last.flatMap { $0 == value || $0 == unit ? nil : $0 }
             // Skip if name is too short (likely a unit symbol).
             if name.count < 2 { continue }
+            // Sprint 4.9b: skip if name itself is a noise word
+            if noisePrefixes.contains(where: { name.hasPrefix($0) }) { continue }
             // Range often looks like "120-160" or "0.8-1.2".
             markers.append(SomaMarker(
                 name: String(name.prefix(50)),
@@ -337,10 +352,13 @@ struct LocalExtractor {
     /// optionally combined with the first date.
     /// Sprint 4.8: filters out OCR page-leak headers (`--- Page N ---`)
     /// that OCRPipeline injects for debugging.
+    /// Sprint 4.9b: also filters PDF/V/Image OCR artefacts that appear
+    /// when the source is a scanned PDF (first lines are noise).
     static func extractTitle(_ text: String, type: DocumentType, date: String?) -> String? {
         let keywords: [String] = {
             switch type {
-            case .labResult: return ["Анализ", "Исследование", "Test", "Lab"]
+            case .labResult: return ["Анализ", "Исследование", "Test", "Lab",
+                                    "Результат клинического", "Клинико-диагностическая"]
             case .epicrisis: return ["Эпикриз", "Epicrisis"]
             case .dischargeSummary: return ["Эпикриз выписной", "Выписка", "Discharge"]
             case .prescription: return ["Рецепт", "Назначение", "Prescription"]
@@ -352,16 +370,19 @@ struct LocalExtractor {
             }
         }()
         // OCR page-leak pattern: `--- Page N ---` injected by OCRPipeline.
-        // Strip these BEFORE scanning first lines so the real title bubbles up.
+        // Sprint 4.9b: also blacklist PDF/V/Image — these are OCR artefacts
+        // when scanning a multi-page PDF (Vision adds them as noise lines).
         let pageHeaderPattern = "^--- Page \\d+ ---$"
+        let ocrNoise: Set<String> = ["PDF", "V", "Image", "Page", "Scan"]
         let firstLines = text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .filter { line in
-                // Strip `--- Page N ---` and similar OCR debug headers
                 line.range(of: pageHeaderPattern, options: [.regularExpression, .caseInsensitive]) == nil
                     && !line.hasPrefix("---")
                     && !line.hasSuffix("---")
+                    && !ocrNoise.contains(line)
+                    && line.count >= 3  // Skip single-char noise
             }
             .prefix(10)
         for line in firstLines {

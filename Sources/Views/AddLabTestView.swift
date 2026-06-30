@@ -275,6 +275,14 @@ struct AddLabTestView: View {
                    let org = extraction.organization, !org.isEmpty {
                     provider = org
                 }
+                // Sprint 4.9b: auto-fill date from LLM extraction if available
+                // (extraction.date is ISO "YYYY-MM-DD" from LLM, or "DD.MM.YYYY"
+                // from LocalExtractor). Falls back to today if not parseable.
+                if let dateString = extraction.date, !dateString.isEmpty,
+                   let parsed = Self.parseExtractionDate(dateString) {
+                    date = parsed
+                    print("[SomaAI] document date set from extraction: \(parsed) (was \(date))")
+                }
                 // Auto-set document title for unknown type to avoid blank state
                 if documentType == .unknown, testName.trimmingCharacters(in: .whitespaces).isEmpty {
                     let isRU = (language == "Русский" || language == "Russian")
@@ -472,5 +480,49 @@ private struct ImportButtonsView: View {
             .buttonStyle(.bordered)
             .disabled(isProcessing)
         }
+    }
+}
+
+
+// MARK: - Sprint 4.9b: date parsing from LLM extraction
+extension AddLabTestView {
+    /// Parses dates from various formats the LLM or LocalExtractor may return.
+    /// Supports: ISO "YYYY-MM-DD", "DD.MM.YYYY", "DD/MM/YYYY", "DD-MM-YYYY",
+    /// "YYYY/MM/DD". Returns nil if unparseable.
+    static func parseExtractionDate(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let formatters: [(String, String)] = [
+            ("yyyy-MM-dd", "ISO"),
+            ("dd.MM.yyyy", "RU"),
+            ("dd/MM/yyyy", "EU"),
+            ("dd-MM-yyyy", "EU-dash"),
+            ("yyyy/MM/dd", "ISO-slash"),
+        ]
+
+        for (fmt, _) in formatters {
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            df.dateFormat = fmt
+            df.timeZone = TimeZone.current
+            if let d = df.date(from: trimmed) {
+                return d
+            }
+        }
+        // Fallback: try "17.11.25" → assume 20YY
+        let shortPattern = #"^(\d{1,2})[./-](\d{1,2})[./-](\d{2})$"#
+        if let re = try? NSRegularExpression(pattern: shortPattern),
+           let m = re.firstMatch(in: trimmed, range: NSRange(location: 0, length: (trimmed as NSString).length)) {
+            let ns = trimmed as NSString
+            let d = Int(ns.substring(with: m.range(at: 1))) ?? 0
+            let mo = Int(ns.substring(with: m.range(at: 2))) ?? 0
+            var y = Int(ns.substring(with: m.range(at: 3))) ?? 0
+            y += 2000  // assume 21st century
+            var comps = DateComponents()
+            comps.year = y; comps.month = mo; comps.day = d
+            if let date = Calendar.current.date(from: comps) { return date }
+        }
+        return nil
     }
 }
