@@ -450,8 +450,11 @@ final class SomaAPIClient {
             return SomaExtractionResponse(type: type.rawValue, date: nil, organization: nil, title: nil, confidence: 0.3, markers: nil, medications: nil, sections: [SomaSection(key: "Текст", value: text, order: 0)])
         }
         // First try: direct decode (the happy path).
-        if let direct = try? JSONDecoder().decode(SomaExtractionResponse.self, from: data) {
+        do {
+            let direct = try JSONDecoder().decode(SomaExtractionResponse.self, from: data)
             return direct
+        } catch {
+            print("[SomaAI] extract type=\(type.rawValue) — direct decode failed: \(error.localizedDescription)")
         }
         // Second try: extract the first { … } block from the response. Some
         // models wrap JSON in "Here is the result: {…}" prose. We grab the
@@ -460,10 +463,14 @@ final class SomaAPIClient {
            let lastBrace = content.lastIndex(of: "}"),
            firstBrace < lastBrace {
             let slice = String(content[firstBrace...lastBrace])
-            if let sliceData = slice.data(using: .utf8),
-               let repaired = try? JSONDecoder().decode(SomaExtractionResponse.self, from: sliceData) {
-                print("[SomaAI] extract type=\(type.rawValue) — JSON repair succeeded (\(slice.count) chars)")
-                return repaired
+            if let sliceData = slice.data(using: .utf8) {
+                do {
+                    let repaired = try JSONDecoder().decode(SomaExtractionResponse.self, from: sliceData)
+                    print("[SomaAI] extract type=\(type.rawValue) — JSON repair succeeded (\(slice.count) chars)")
+                    return repaired
+                } catch {
+                    print("[SomaAI] extract type=\(type.rawValue) — slice repair also failed: \(error.localizedDescription)")
+                }
             }
         }
         // Both attempts failed — try local regex first, then raw text.
