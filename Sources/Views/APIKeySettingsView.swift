@@ -151,7 +151,13 @@ struct APIKeySettingsView: View {
                 }
             }
             .onAppear {
-                // Load Wormsoft (uses pre-4.7e 'default' account for backward compat)
+                // Sprint 4.7g: auto-migrate legacy 'default' key into 'soma_api_key_wormsoft'.
+                _ = KeychainHelper.shared.migrateLegacyDefaultAccount()
+
+                // Log current state so we can see in console whether keys are present.
+                print("[SomaAI] APIKeySettingsView.onAppear: wormsoft=\(KeychainHelper.shared.masked(accountName: APIProvider.wormsoft.keychainAccount)), openai=\(KeychainHelper.shared.masked(accountName: APIProvider.openai.keychainAccount))")
+
+                // Load Wormsoft
                 do {
                     wormsoftKey = try KeychainHelper.shared.read(accountName: APIProvider.wormsoft.keychainAccount)
                 } catch {

@@ -56,7 +56,11 @@ struct KeychainHelper {
             guard updateStatus == errSecSuccess else {
                 throw KeychainError.invalidStatus(updateStatus)
             }
-        } else if status != errSecSuccess {
+            print("[SomaAI] KeychainHelper.save: updated account=\(accountName), value.length=\(value.count)")
+        } else if status == errSecSuccess {
+            print("[SomaAI] KeychainHelper.save: created account=\(accountName), value.length=\(value.count)")
+        } else {
+            print("[SomaAI] KeychainHelper.save: FAILED account=\(accountName), status=\(status)")
             throw KeychainError.invalidStatus(status)
         }
     }
@@ -110,5 +114,32 @@ struct KeychainHelper {
         let prefix = full.prefix(7)
         let suffix = full.suffix(4)
         return "\(prefix)...\(suffix)"
+    }
+
+    /// Sprint 4.7g: auto-migrate old 'default' Wormsoft key into the new
+    /// 'soma_api_key_wormsoft' account. Run once on app launch.
+    /// Returns true if migration happened, false otherwise.
+    @discardableResult
+    func migrateLegacyDefaultAccount() -> Bool {
+        // Check if old 'default' key exists
+        guard let oldKey = try? read(accountName: "default"), !oldKey.isEmpty else {
+            return false  // nothing to migrate
+        }
+        // Check if new account is empty
+        if (try? read(accountName: APIProvider.wormsoft.keychainAccount)) != nil {
+            print("[SomaAI] Keychain migration skipped: new account already has a key")
+            // Old key still exists but new one is set — leave both, user can clean up
+            return false
+        }
+        // Migrate
+        do {
+            try save(oldKey, accountName: APIProvider.wormsoft.keychainAccount)
+            try delete(accountName: "default")
+            print("[SomaAI] Keychain migration: 'default' → 'soma_api_key_wormsoft' done")
+            return true
+        } catch {
+            print("[SomaAI] KeyChain migration FAILED: \(error.localizedDescription)")
+            return false
+        }
     }
 }
