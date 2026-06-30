@@ -166,13 +166,15 @@ enum APIProvider: String, CaseIterable, Identifiable, Codable {
 final class SomaAPIClient {
     static let shared = SomaAPIClient()
 
-    private var apiKey: String {
+    private func apiKey(for provider: APIProvider) -> String {
         do {
-            return try KeychainHelper.shared.read()
+            return try KeychainHelper.shared.read(accountName: provider.keychainAccount)
         } catch {
             return ""
         }
     }
+    // Sprint 4.7e: backward-compat alias for pre-4.7e callers (returns wormsoft key).
+    private var apiKey: String { apiKey(for: .wormsoft) }
 
     private var settings: SomaAPISettings { SomaAPISettings.load() }
 
