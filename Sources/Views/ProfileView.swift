@@ -66,11 +66,16 @@ struct ProfileView: View {
 
                     NavigationLink(destination: APIKeySettingsView(onSave: { settingsRefresh = UUID() })) {
                         HStack {
-                            Text("Soma API Key")
+                            Text("API Keys (Wormsoft + OpenAI)")
                             Spacer()
-                            if (try? KeychainHelper.shared.read()) != nil {
+                            let wormsoftSet = (try? KeychainHelper.shared.read(accountName: APIProvider.wormsoft.keychainAccount)) != nil
+                            let openaiSet = (try? KeychainHelper.shared.read(accountName: APIProvider.openai.keychainAccount)) != nil
+                            if wormsoftSet && openaiSet {
                                 Image(systemName: "checkmark.seal.fill")
                                     .foregroundColor(.green)
+                            } else if wormsoftSet || openaiSet {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
                             } else {
                                 Text("Not set")
                                     .foregroundColor(.secondary)
