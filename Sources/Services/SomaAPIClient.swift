@@ -285,6 +285,18 @@ final class SomaAPIClient {
 
         if let vote = result.vote {
             print("[SomaAI] smartClassify: LLM vote → \(vote.type)@\(vote.confidence)")
+            // Sprint 4.9 fallback: if LLM said unknown@0.0 (or very low)
+            // but text screams "lab", trust the text.
+            if vote.type == DocumentType.unknown.rawValue && vote.confidence <= 0.1 {
+                if let labHint = self.regexClassify(text), labHint.type == DocumentType.labResult.rawValue {
+                    print("[SomaAI] smartClassify: LLM said unknown but labHint → promoting to labResult@\(labHint.confidence * 0.8)")
+                    return SomaClassifyResponse(
+                        type: DocumentType.labResult.rawValue,
+                        confidence: labHint.confidence * 0.8,  // discount slightly
+                        organization: labHint.organization
+                    )
+                }
+            }
             return vote
         }
         print("[SomaAI] smartClassify: LLM timed out/failed → returning unknown@0.4 (user can re-type)")
@@ -342,6 +354,23 @@ final class SomaAPIClient {
             ("биохимический анализ",  DocumentType.labResult.rawValue, 0.90),
             ("complete blood count",  DocumentType.labResult.rawValue, 0.90),
             ("urinalysis",            DocumentType.labResult.rawValue, 0.90),
+            // Sprint 4.9: explicit lab headers from НКЦ2 РНЦХ формат.
+            // These are the strong signals that indicate a standalone lab
+            // document (not embedded labs in an epicrisis).
+            ("клинико-диагностическая лаборатория", DocumentType.labResult.rawValue, 0.95),
+            ("клинический анализ крови",            DocumentType.labResult.rawValue, 0.92),
+            ("биохимическое исследование",           DocumentType.labResult.rawValue, 0.90),
+            ("коагулограмма",                       DocumentType.labResult.rawValue, 0.92),
+            ("липидограмма",                        DocumentType.labResult.rawValue, 0.92),
+            ("гормональное исследование",            DocumentType.labResult.rawValue, 0.90),
+            ("изосерология",                        DocumentType.labResult.rawValue, 0.92),
+            ("иммунологическое исследование",        DocumentType.labResult.rawValue, 0.90),
+            ("пцр-исследование",                    DocumentType.labResult.rawValue, 0.90),
+            ("бактериологическое исследование",     DocumentType.labResult.rawValue, 0.90),
+            ("цитологическое исследование",         DocumentType.labResult.rawValue, 0.90),
+            ("гистологическое исследование",        DocumentType.labResult.rawValue, 0.90),
+            ("cbc",                                 DocumentType.labResult.rawValue, 0.85),
+            ("lipid panel",                         DocumentType.labResult.rawValue, 0.85),
         ]
         for (pattern, type, conf) in rules {
             if lower.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
