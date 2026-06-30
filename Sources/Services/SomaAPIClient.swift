@@ -426,16 +426,18 @@ final class SomaAPIClient {
             ["role": "user", "content": text]
         ]
         // Sprint 4.7: multi-model fallback chain.
-// Try primary model first; if it fails/times out, try a faster one,
-// then a more capable one. If all fail, fall back to LocalExtractor.
-// Models picked from scripts/bench.sh (19 available aliases).
-// Order rationale: medium (default) → low (faster) → high (more capable).
+// Oleg's Wormsoft LK shows 9 system aliases with internal fallbacks.
+// We pick 3 best-fit aliases for lab extraction:
+//   1. wormsoft/code/high — code-specialized (best JSON, 4 sub-models)
+//   2. wormsoft/code/medium — current default (3 sub-models)
+//   3. wormsoft/agent/low — qwen3-vl (vision-capable, cheap fallback)
+// If all fail, fall back to LocalExtractor.
         let modelChain = [
-            "wormsoft/code/medium",  // primary (current default)
-            "wormsoft/agent/low",    // faster fallback
-            "wormsoft/code/high",    // last resort (slower but capable)
+            "wormsoft/code/high",    // minimax-m3, kimi-k2.7-code, kimi-k2.6, glm-5.1
+            "wormsoft/code/medium",  // gemma4:31b, qwen3.6:27b, minimax-m2.7
+            "wormsoft/agent/low",    // qwen3-vl (vision), qwen3.5:235b, qwen3.6:35b, deepseek-v3.1
         ]
-        let perModelTimeoutNs: UInt64 = 10_000_000_000  // 10s per model
+        let perModelTimeoutNs: UInt64 = 15_000_000_000  // 15s per model (45s total max, still < 75s overall)
         var content: String?
         var lastError: Error?
         var triedModels: [String] = []
@@ -589,9 +591,9 @@ final class SomaAPIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        // Sprint 4.7: per-model timeout 10s. Combined with 3-model chain,
-        // max 30s for extract step (was 25s for one model).
-        request.timeoutInterval = 10
+        // Sprint 4.7: per-model HTTP timeout 15s. Matches perModelTimeoutNs.
+        // Combined with 3-model chain, max 45s for extract step.
+        request.timeoutInterval = 15
         let chosenModel = model ?? settings.modelName
         let body: [String: Any] = [
             "model": chosenModel,
