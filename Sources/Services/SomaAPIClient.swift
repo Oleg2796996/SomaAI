@@ -101,6 +101,66 @@ struct SomaAPISettings: Codable {
         UserDefaults.standard.set(modelName, forKey: "soma_api_model_name")
     }
 }
+/// Sprint 4.7e: provider routing. Each provider has its own API key
+/// stored in iOS Keychain (separate accounts). Enables multi-provider
+/// fallback chain in `SomaAPIClient.extractDocument`.
+enum APIProvider: String, CaseIterable, Identifiable, Codable {
+    case wormsoft       // ai.wormsoft.ru (current default)
+    case openai         // api.openai.com (Sprint 4.7e — fallback)
+    
+    var id: String { rawValue }
+    
+    /// Keychain account name. Multiple providers co-exist safely.
+    var keychainAccount: String {
+        switch self {
+        case .wormsoft: return "soma_api_key_wormsoft"
+        case .openai:   return "soma_api_key_openai"
+        }
+    }
+    
+    /// OpenAI-compatible baseURL. Both providers use /v1/chat/completions.
+    var baseURL: String {
+        switch self {
+        case .wormsoft: return "https://ai.wormsoft.ru/api/gpt"
+        case .openai:   return "https://api.openai.com/v1"
+        }
+    }
+    
+    /// Display name for Settings UI.
+    var displayName: String {
+        switch self {
+        case .wormsoft: return "Wormsoft"
+        case .openai:   return "OpenAI"
+        }
+    }
+    
+    /// Default model for that provider.
+    var defaultModel: String {
+        switch self {
+        case .wormsoft: return "wormsoft/code/medium"
+        case .openai:   return "gpt-4o-mini"
+        }
+    }
+    
+    /// Model chain to try in order (Sprint 4.7 multi-model fallback).
+    var modelChain: [String] {
+        switch self {
+        case .wormsoft:
+            // Code-specialized chain (best for JSON extraction).
+            return [
+                "wormsoft/code/high",
+                "wormsoft/code/medium",
+                "wormsoft/agent/low"
+            ]
+        case .openai:
+            // OpenAI: 4o-mini is fast + cheap, then 4o if needed.
+            return [
+                "gpt-4o-mini",
+                "gpt-4o"
+            ]
+        }
+    }
+}
 
 // MARK: - Client
 final class SomaAPIClient {
@@ -425,48 +485,58 @@ final class SomaAPIClient {
             ["role": "system", "content": prompt],
             ["role": "user", "content": text]
         ]
-        // Sprint 4.7: multi-model fallback chain.
-// Oleg's Wormsoft LK shows 9 system aliases with internal fallbacks.
-// We pick 3 best-fit aliases for lab extraction:
-//   1. wormsoft/code/high — code-specialized (best JSON, 4 sub-models)
-//   2. wormsoft/code/medium — current default (3 sub-models)
-//   3. wormsoft/agent/low — qwen3-vl (vision-capable, cheap fallback)
-// If all fail, fall back to LocalExtractor.
-        let modelChain = [
-            "wormsoft/code/high",    // minimax-m3, kimi-k2.7-code, kimi-k2.6, glm-5.1
-            "wormsoft/code/medium",  // gemma4:31b, qwen3.6:27b, minimax-m2.7
-            "wormsoft/agent/low",    // qwen3-vl (vision), qwen3.5:235b, qwen3.6:35b, deepseek-v3.1
-        ]
-        let perModelTimeoutNs: UInt64 = 15_000_000_000  // 15s per model (45s total max, still < 75s overall)
-        var currentResponse: String?
+        // Sprint 4.7e: provider chain.
+        // First try Wormsoft (3 models); if all fail AND OpenAI key is set,
+        // try OpenAI (2 models). If everything fails, LocalExtractor.
+        //
+        // Each provider call uses its own API key from Keychain.
+        // OpenAI is silently skipped if its key is empty.
+        let perProviderTimeoutNs: UInt64 = 15_000_000_000  // 15s per model
+        let providerChain: [APIProvider] = [.wormsoft, .openai]
         var lastError: Error?
-        var triedModels: [String] = []
-        for model in modelChain {
-            triedModels.append(model)
-            do {
-                let result = try await withThrowingTaskGroup(of: String.self) { group in
-                    group.addTask { try await self.sendChat(messages: messages, temperature: 0.0, model: model) }
-                    group.addTask {
-                        try await Task.sleep(nanoseconds: perModelTimeoutNs)
-                        throw CancellationError()
-                    }
-                    let first = try await group.next()!
-                    group.cancelAll()
-                    return first
-                }
-                currentResponse = result
-                if triedModels.count > 1 {
-                    print("[SomaAI] extract type=\(type.rawValue) recovered with model \(model) after \(triedModels.count - 1) failures")
-                }
-                break
-            } catch {
-                lastError = error
-                print("[SomaAI] extract type=\(type.rawValue) model \(model) failed: \(error.localizedDescription) — trying next")
+        var triedProviders: [String] = []
+        var currentResponse: String?
+        // Sprint 4.7e: outer loop over providers, inner over each provider's model chain.
+        // Skips providers with empty API key.
+        outer: for provider in providerChain {
+            let key = apiKey(for: provider)
+            if key.isEmpty {
+                print("[SomaAI] extract type=\(type.rawValue) provider \(provider.displayName) skipped — no API key")
                 continue
+            }
+            for model in provider.modelChain {
+                triedProviders.append("\(provider.displayName)/\(model)")
+                do {
+                    let result = try await withThrowingTaskGroup(of: String.self) { group in
+                        group.addTask {
+                            try await self.sendChat(
+                                messages: messages, temperature: 0.0, model: model,
+                                provider: provider, apiKey: key,
+                                endpoint: provider.baseURL + "/chat/completions"
+                            )
+                        }
+                        group.addTask {
+                            try await Task.sleep(nanoseconds: perProviderTimeoutNs)
+                            throw CancellationError()
+                        }
+                        let first = try await group.next()!
+                        group.cancelAll()
+                        return first
+                    }
+                    currentResponse = result
+                    if triedProviders.count > 1 {
+                        print("[SomaAI] extract type=\(type.rawValue) recovered with \(provider.displayName)/\(model) after \(triedProviders.count - 1) failures")
+                    }
+                    break outer  // success
+                } catch {
+                    lastError = error
+                    print("[SomaAI] extract type=\(type.rawValue) model \(provider.displayName)/\(model) failed: \(error.localizedDescription) — trying next")
+                    continue
+                }
             }
         }
         guard let finalContent = currentResponse else {
-            print("[SomaAI] extract type=\(type.rawValue) all \(modelChain.count) models failed — falling back to LocalExtractor")
+            print("[SomaAI] extract type=\(type.rawValue) all \(triedProviders.count) models across providers failed — falling back to LocalExtractor")
             let local = LocalExtractor.extract(text, type: type)
             print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
             return local
@@ -584,17 +654,28 @@ final class SomaAPIClient {
     // MARK: Shared low-level chat call
 
     /// Single low-level LLM call. Used by every step of the pipeline.
-    private func sendChat(messages: [[String: String]], temperature: Double, model: String? = nil) async throws -> String {
-        guard !apiKey.isEmpty else { throw SomaAPIError.noAPIKey }
-        guard let url = URL(string: chatEndpoint) else { throw SomaAPIError.invalidEndpoint(chatEndpoint) }
+    // Sprint 4.7e: provider + apiKey + endpoint parameters. Allows
+    // sending to multiple providers from the same client.
+    private func sendChat(
+        messages: [[String: String]],
+        temperature: Double,
+        model: String? = nil,
+        provider: APIProvider = .wormsoft,
+        apiKey: String? = nil,
+        endpoint: String? = nil
+    ) async throws -> String {
+        let activeKey = apiKey ?? self.apiKey(for: provider)
+        guard !activeKey.isEmpty else { throw SomaAPIError.noAPIKey }
+        let activeEndpoint = endpoint ?? (provider.baseURL + "/chat/completions")
+        guard let url = URL(string: activeEndpoint) else { throw SomaAPIError.invalidEndpoint(activeEndpoint) }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
         // Sprint 4.7: per-model HTTP timeout 15s. Matches perModelTimeoutNs.
         // Combined with 3-model chain, max 45s for extract step.
         request.timeoutInterval = 15
-        let chosenModel = model ?? settings.modelName
+        let chosenModel = model ?? provider.defaultModel
         let body: [String: Any] = [
             "model": chosenModel,
             "messages": messages,

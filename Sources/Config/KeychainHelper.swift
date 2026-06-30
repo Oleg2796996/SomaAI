@@ -21,19 +21,21 @@ enum KeychainError: Error, LocalizedError {
     }
 }
 
+/// Sprint 4.7e: multi-provider API key storage.
+/// `accountName` distinguishes Wormsoft / OpenAI / custom endpoints.
+/// Default "default" preserves backward compatibility with pre-4.7e code.
 struct KeychainHelper {
     static let shared = KeychainHelper()
-    private let account = "soma_api_key"
     private let service = Bundle.main.bundleIdentifier ?? "com.olegkonovalov.SomaAI"
 
-    func save(_ value: String) throws {
+    func save(_ value: String, accountName: String = "default") throws {
         guard let data = value.data(using: .utf8) else {
             throw KeychainError.conversionFailed
         }
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: accountName,
             kSecAttrService as String: service,
             kSecValueData as String: data
         ]
@@ -44,7 +46,7 @@ struct KeychainHelper {
             // Update existing item
             let updateQuery: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrAccount as String: account,
+                kSecAttrAccount as String: accountName,
                 kSecAttrService as String: service
             ]
             let attributesToUpdate: [String: Any] = [
@@ -59,10 +61,10 @@ struct KeychainHelper {
         }
     }
 
-    func read() throws -> String {
+    func read(accountName: String = "default") throws -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: accountName,
             kSecAttrService as String: service,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
@@ -85,10 +87,10 @@ struct KeychainHelper {
         return value
     }
 
-    func delete() throws {
+    func delete(accountName: String = "default") throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: accountName,
             kSecAttrService as String: service
         ]
 
@@ -96,5 +98,17 @@ struct KeychainHelper {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.invalidStatus(status)
         }
+    }
+
+    /// Returns first 7 + last 4 chars for safe display in Settings UI.
+    /// Never returns the full key. Useful for "is the key I just pasted
+    /// the same one I think it is?" UX.
+    func masked(accountName: String = "default") -> String {
+        guard let full = try? read(accountName: accountName), full.count >= 12 else {
+            return "not set"
+        }
+        let prefix = full.prefix(7)
+        let suffix = full.suffix(4)
+        return "\(prefix)...\(suffix)"
     }
 }
