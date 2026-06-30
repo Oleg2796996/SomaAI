@@ -87,7 +87,7 @@ struct APIKeySettingsView: View {
 
                 // ═════════ OpenAI Section ═════════
                 Section(header: Text("OpenAI (fallback provider)")) {
-                    SecureField("Enter OpenAI API Key", text: $openaiKey)
+                    SecureField("Enter new key to replace stored one", text: $openaiKey)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     Text("OpenAI key stored in iOS Keychain (account: soma_api_key_openai). Endpoint \(APIProvider.openai.baseURL) and default model \(APIProvider.openai.defaultModel) are hardcoded in APIProvider enum.")
@@ -96,6 +96,11 @@ struct APIKeySettingsView: View {
                     Text("Current: \(KeychainHelper.shared.masked(accountName: APIProvider.openai.keychainAccount))")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    if KeychainHelper.shared.masked(accountName: APIProvider.openai.keychainAccount) != "not set" {
+                        Text("✓ Key is already saved. Leave field empty if you don't want to change it.")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
                 }
 
                 Section {
