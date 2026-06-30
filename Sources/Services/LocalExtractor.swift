@@ -335,6 +335,8 @@ struct LocalExtractor {
 
     /// First non-empty line that matches a document-type keyword,
     /// optionally combined with the first date.
+    /// Sprint 4.8: filters out OCR page-leak headers (`--- Page N ---`)
+    /// that OCRPipeline injects for debugging.
     static func extractTitle(_ text: String, type: DocumentType, date: String?) -> String? {
         let keywords: [String] = {
             switch type {
@@ -349,9 +351,18 @@ struct LocalExtractor {
             case .unknown: return []
             }
         }()
+        // OCR page-leak pattern: `--- Page N ---` injected by OCRPipeline.
+        // Strip these BEFORE scanning first lines so the real title bubbles up.
+        let pageHeaderPattern = "^--- Page \\d+ ---$"
         let firstLines = text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+            .filter { line in
+                // Strip `--- Page N ---` and similar OCR debug headers
+                line.range(of: pageHeaderPattern, options: [.regularExpression, .caseInsensitive]) == nil
+                    && !line.hasPrefix("---")
+                    && !line.hasSuffix("---")
+            }
             .prefix(10)
         for line in firstLines {
             for kw in keywords {
