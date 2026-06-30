@@ -459,19 +459,37 @@ final class SomaAPIClient {
         // Second try: extract the first { … } block from the response. Some
         // models wrap JSON in "Here is the result: {…}" prose. We grab the
         // first { and the last } and try decoding that slice.
-        if let firstBrace = content.firstIndex(of: "{"),
-           let lastBrace = content.lastIndex(of: "}"),
-           firstBrace < lastBrace {
-            let slice = String(content[firstBrace...lastBrace])
-            if let sliceData = slice.data(using: .utf8) {
-                do {
-                    let repaired = try JSONDecoder().decode(SomaExtractionResponse.self, from: sliceData)
-                    print("[SomaAI] extract type=\(type.rawValue) — JSON repair succeeded (\(slice.count) chars)")
-                    return repaired
-                } catch {
-                    print("[SomaAI] extract type=\(type.rawValue) — slice repair also failed: \(error.localizedDescription)")
+        // Sprint 4.9d: try multiple starting braces because LLMs sometimes
+        // include `{` inside markdown ``` fences or in comment-like prose.
+        if let lastBrace = content.lastIndex(of: "}") {
+            var currentIdx = content.startIndex
+            while let firstBrace = content.range(of: "{", range: currentIdx..<lastBrace)?.lowerBound,
+                  firstBrace < lastBrace {
+                let slice = String(content[firstBrace...lastBrace])
+                if let sliceData = slice.data(using: .utf8) {
+                    do {
+                        let repaired = try JSONDecoder().decode(SomaExtractionResponse.self, from: sliceData)
+                        print("[SomaAI] extract type=\(type.rawValue) — JSON repair succeeded at offset \(firstBrace) (\(slice.count) chars)")
+                        return repaired
+                    } catch {
+                        // Continue trying the next `{`
+                        // Print only first failure to avoid log spam
+                        if firstBrace == content.firstIndex(of: "{") {
+                            print("[SomaAI] extract type=\(type.rawValue) — slice repair at offset \(firstBrace) failed: \(error.localizedDescription)")
+                        }
+                    }
                 }
+                // Move past this brace
+                currentIdx = content.index(after: firstBrace)
+                if currentIdx >= lastBrace { break }
             }
+        }
+        // Third try: manual regex extraction for markers specifically.
+        // If JSONDecoder fails but we can extract marker JSON snippets via
+        // regex, build a partial SomaExtractionResponse manually.
+        if let manual = manualMarkerExtraction(content, type: type) {
+            print("[SomaAI] extract type=\(type.rawValue) — manual regex extraction recovered \(manual.markers?.count ?? 0) markers")
+            return manual
         }
         // Both attempts failed — try local regex first, then raw text.
         print("[SomaAI] extract decode failed for type \(type.rawValue) — falling back to LocalExtractor")
@@ -965,4 +983,57 @@ Return ONLY this JSON (no markdown):
 Use the original section headings. If there are no headings, split the text into 2-3 logical sections (Верх, Середина, Низ is fine). Keep the order they appear in the text.
 If OCR is too short (< 50 chars), return empty sections and confidence=0.0.
 """
+}
+
+
+// MARK: - Sprint 4.9d: manual marker extraction fallback
+
+extension SomaAPIClient {
+    /// Sprint 4.9d: if JSONDecoder fails (LLM produced truncated or
+    /// malformed JSON), try to extract marker objects via regex directly
+    /// from the raw LLM response text. Handles the common pattern:
+    ///     {"name": "...", "value": "...", "unit": "...", ...}
+    static func manualMarkerExtraction(_ content: String, type: DocumentType) -> SomaExtractionResponse? {
+        // Look for marker-like JSON objects.
+        // Pattern: {"name": "X", "value": "Y", ...}
+        let pattern = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"value"\s*:\s*"([^"]*)"(?:\s*,\s*"unit"\s*:\s*"([^"]*)")?(?:\s*,\s*"referenceRange"\s*:\s*"([^"]*)")?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+            return nil
+        }
+        let ns = content as NSString
+        let matches = regex.matches(in: content, range: NSRange(location: 0, length: ns.length))
+        if matches.isEmpty { return nil }
+
+        var markers: [SomaMarker] = []
+        for m in matches {
+            let name = ns.substring(with: m.range(at: 1))
+            let value = ns.substring(with: m.range(at: 2))
+            // groups 3, 4 may not be present
+            let unit: String? = m.range(at: 3).location == NSNotFound ? nil : ns.substring(with: m.range(at: 3))
+            let range: String? = m.range(at: 4).location == NSNotFound ? nil : ns.substring(with: m.range(at: 4))
+            markers.append(SomaMarker(
+                name: name, value: value, unit: unit,
+                referenceRange: range, flag: nil
+            ))
+        }
+        // Also try to extract date/title if present
+        let datePattern = #""date"\s*:\s*"([^"]+)""#
+        let dateRegex = try? NSRegularExpression(pattern: datePattern)
+        let date = dateRegex?.firstMatch(in: content, range: NSRange(location: 0, length: ns.length))
+            .flatMap { ns.substring(with: $0.range(at: 1)) }
+        let titlePattern = #""title"\s*:\s*"([^"]+)""#
+        let titleRegex = try? NSRegularExpression(pattern: titlePattern)
+        let title = titleRegex?.firstMatch(in: content, range: NSRange(location: 0, length: ns.length))
+            .flatMap { ns.substring(with: $0.range(at: 1)) }
+        let orgPattern = #""organization"\s*:\s*"([^"]+)""#
+        let orgRegex = try? NSRegularExpression(pattern: orgPattern)
+        let org = orgRegex?.firstMatch(in: content, range: NSRange(location: 0, length: ns.length))
+            .flatMap { ns.substring(with: $0.range(at: 1)) }
+
+        return SomaExtractionResponse(
+            type: type.rawValue, date: date, organization: org, title: title,
+            confidence: 0.8,  // partial recovery, slightly lower
+            markers: markers, medications: nil, sections: nil
+        )
+    }
 }
