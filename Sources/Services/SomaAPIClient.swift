@@ -490,7 +490,7 @@ final class SomaAPIClient {
 
         // Sprint 4.7i diagnostic: log FULL OCR text sent to LLM (truncated to 3000 chars to avoid log spam).
         print("[SomaAI] extract FULL TEXT (\(text.count) chars) → LLM: \(String(text.prefix(3000)))")
-        ]
+
         // Sprint 4.7e: provider chain.
         // First try Wormsoft (3 models); if all fail AND OpenAI key is set,
         // try OpenAI (2 models). If everything fails, LocalExtractor.
