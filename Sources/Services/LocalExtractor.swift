@@ -184,12 +184,26 @@ struct LocalExtractor {
         let lines = text.components(separatedBy: .newlines)
         // Sprint 4.9b: blacklist of OCR/field-label prefixes that look like
         // markers but are just page metadata.
+        // Sprint 4.9e: expanded — capture the long tail of OCR noise from
+        // scanned PDFs (table headings, truncated lines, headers).
         let noisePrefixes: [String] = [
             "№ ", "Nº", "№", "N°",  // card numbers
             "Стр.", "стр.", "Page",  // page footers
             "--- ",  // OCR debug headers
             "Биоматериал:", "Заказчик:", "Отделение", "Врач:", "Адрес:",
             "Дата рождения:", "Пол:", "Ф.И.О.:", "Доставка", "Результат клинического",
+            // Sprint 4.9e additions:
+            "Анализ", "Анализы", "Исследовани", "Исследование",  // table headers
+            "Показатель", "Метод", "Единицы", "Референс",  // column headers
+            "Подпис", "Дата выполнения", "Время", "Sample",  // footer/metadata
+            "Test", "Lab",  // generic EN headers
+        ]
+        // Sprint 4.9e: lines whose 'name' part is too short (≤3 chars) or
+        // matches a generic word are almost certainly OCR artefacts, not
+        // real marker names like "Эритроциты, RBC" (≥7 chars typically).
+        let genericNames: Set<String> = [
+            "Анализ", "Анализы", "Исследование", "Test", "Lab", "Биоматериал",
+            "Стр.", "Page", "Sample", "Метод", "Результат",
         ]
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -217,6 +231,10 @@ struct LocalExtractor {
             if name.count < 2 { continue }
             // Sprint 4.9b: skip if name itself is a noise word
             if noisePrefixes.contains(where: { name.hasPrefix($0) }) { continue }
+            // Sprint 4.9e: skip if name is just a generic single word
+            // (e.g. "Анализы", "Исследование" — these are column headers,
+            // not real marker names like "Эритроциты, RBC").
+            if genericNames.contains(name) { continue }
             // Range often looks like "120-160" or "0.8-1.2".
             markers.append(SomaMarker(
                 name: String(name.prefix(50)),
