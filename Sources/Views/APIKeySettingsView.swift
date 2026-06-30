@@ -39,7 +39,7 @@ struct APIKeySettingsView: View {
                         .foregroundColor(.secondary)
                     Text("Current: \(KeychainHelper.shared.masked(accountName: APIProvider.wormsoft.keychainAccount))")
                         .font(.caption2)
-                        .foregroundColor(.tertiary)
+                        .foregroundStyle(.tertiary)
                 }
 
                 Section {
@@ -95,7 +95,7 @@ struct APIKeySettingsView: View {
                         .foregroundColor(.secondary)
                     Text("Current: \(KeychainHelper.shared.masked(accountName: APIProvider.openai.keychainAccount))")
                         .font(.caption2)
-                        .foregroundColor(.tertiary)
+                        .foregroundStyle(.tertiary)
                 }
 
                 Section {

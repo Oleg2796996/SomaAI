@@ -495,7 +495,6 @@ final class SomaAPIClient {
         // OpenAI is silently skipped if its key is empty.
         let perProviderTimeoutNs: UInt64 = 15_000_000_000  // 15s per model
         let providerChain: [APIProvider] = [.wormsoft, .openai]
-        var lastError: Error?
         var triedProviders: [String] = []
         var currentResponse: String?
         // Sprint 4.7e: outer loop over providers, inner over each provider's model chain.
@@ -531,7 +530,6 @@ final class SomaAPIClient {
                     }
                     break outer  // success
                 } catch {
-                    lastError = error
                     print("[SomaAI] extract type=\(type.rawValue) model \(provider.displayName)/\(model) failed: \(error.localizedDescription) — trying next")
                     continue
                 }
