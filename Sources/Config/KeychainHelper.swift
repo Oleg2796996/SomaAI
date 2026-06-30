@@ -28,6 +28,10 @@ struct KeychainHelper {
     static let shared = KeychainHelper()
     private let service = Bundle.main.bundleIdentifier ?? "com.olegkonovalov.SomaAI"
 
+    init() {
+        print("[SomaAI] KeychainHelper.init: service=\(service)")
+    }
+
     func save(_ value: String, accountName: String = "default") throws {
         guard let data = value.data(using: .utf8) else {
             throw KeychainError.conversionFailed
@@ -77,6 +81,14 @@ struct KeychainHelper {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
 
+        if status == errSecSuccess {
+            print("[SomaAI] KeychainHelper.read: OK account=\(accountName)")
+        } else if status == errSecItemNotFound {
+            print("[SomaAI] KeychainHelper.read: NOT_FOUND account=\(accountName)")
+        } else {
+            print("[SomaAI] KeychainHelper.read: FAILED account=\(accountName), status=\(status)")
+        }
+
         guard status == errSecSuccess else {
             if status == errSecItemNotFound {
                 throw KeychainError.itemNotFound
@@ -85,6 +97,7 @@ struct KeychainHelper {
         }
 
         guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+            print("[SomaAI] KeychainHelper.read: CONVERSION_FAILED account=\(accountName)")
             throw KeychainError.conversionFailed
         }
 
