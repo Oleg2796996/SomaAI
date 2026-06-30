@@ -472,7 +472,7 @@ final class SomaAPIClient {
             return local
         }
         let contentForDecode = finalContent
-        let content = finalContent
+        let content = contentForDecode  // alias for downstream code
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
         guard let data = content.data(using: .utf8) else {
