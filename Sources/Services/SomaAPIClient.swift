@@ -1307,30 +1307,36 @@ extension SomaAPIClient {
         guard let num = Double(normalizedValue) else { return nil }
         // Parse "< 5.6", "> 10", "4.2 - 5.6", "0.0 - 1.0"
         let ref = reference.replacingOccurrences(of: ",", with: ".")
+        // Normalize dashes: "4.2-5.6" → "4.2 - 5.6" (also "–" en-dash, "—" em-dash)
+        let refNorm = ref
+            .replacingOccurrences(of: "–", with: "-")
+            .replacingOccurrences(of: "—", with: "-")
+            .replacingOccurrences(of: "-", with: " - ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespaces)
         // Range: "A - B"
-        if let dashRange = ref.range(of: " - ") {
-            let lowStr = String(ref[ref.startIndex..<dashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-            let highStr = String(ref[dashRange.upperBound..<ref.endIndex]).trimmingCharacters(in: .whitespaces)
+        if let dashRange = refNorm.range(of: " - ") {
+            let lowStr = String(refNorm[refNorm.startIndex..<dashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let highStr = String(refNorm[dashRange.upperBound..<refNorm.endIndex]).trimmingCharacters(in: .whitespaces)
             if let low = Double(lowStr), let high = Double(highStr) {
                 if num < low { return "Low" }
                 if num > high { return "High" }
                 return "Normal"
             }
         }
-        // Less than: "< 5.6"
-        if let ltRange = ref.range(of: "< ") {
-            let limStr = String(ref[ltRange.upperBound..<ref.endIndex]).trimmingCharacters(in: .whitespaces)
-            if let lim = Double(limStr) {
-                return num < lim ? "Normal" : "High"
-            }
+        // Less than: "< 5.6" (also "≤5.6")
+        if refNorm.contains("<") || refNorm.contains("≤") {
+            let limStr = refNorm.replacingOccurrences(of: "<", with: "")
+                .replacingOccurrences(of: "≤", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if let lim = Double(limStr) { return num < lim ? "Normal" : "High" }
         }
-        // Greater than: "> 10"
-        if let gtRange = ref.range(of: "> ") {
-            let limStr = String(ref[gtRange.upperBound..<ref.endIndex]).trimmingCharacters(in: .whitespaces)
-            if let lim = Double(limStr) {
-                return num > lim ? "Normal" : "Low"
-            }
-        }
+        // Greater than: "> 10" (also "≥10")
+        if refNorm.contains(">") || refNorm.contains("≥") {
+            let limStr = refNorm.replacingOccurrences(of: ">", with: "")
+                .replacingOccurrences(of: "≥", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            if let lim = Double(limStr) { return num > lim ? "Normal" : "Low" }
         return nil
     }
 }
