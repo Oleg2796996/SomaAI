@@ -15,13 +15,6 @@ struct LabTestDetailView: View {
                 headerSection
                 Divider()
                 bodySection
-                // Sprint 4.7aa-debug: log marker flags once when detail view appears
-                Color.clear.frame(height: 0)
-                    .onAppear {
-                        for (i, m) in test.markers.enumerated() {
-                            print("[SomaAI-detail] marker[\(i)] name=\(m.name) value=\(m.value) flag=\(m.flag ?? \"NIL\")")
-                        }
-                    }
                 Spacer(minLength: 40)
                 Text(Localization.somaTranslate("disclaimer_data_only", language: language))
                     .font(.caption)
