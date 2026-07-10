@@ -15,6 +15,13 @@ struct LabTestDetailView: View {
                 headerSection
                 Divider()
                 bodySection
+                // Sprint 4.7aa-debug: log marker flags once when detail view appears
+                Color.clear.frame(height: 0)
+                    .onAppear {
+                        for (i, m) in test.markers.enumerated() {
+                            print("[SomaAI-detail] marker[\(i)] name=\(m.name) value=\(m.value) flag=\(m.flag ?? \"NIL\")")
+                        }
+                    }
                 Spacer(minLength: 40)
                 Text(Localization.somaTranslate("disclaimer_data_only", language: language))
                     .font(.caption)
@@ -99,8 +106,17 @@ struct LabTestDetailView: View {
                 }
                 Spacer()
                 HStack(spacing: 4) {
-                    Text(marker.value).fontWeight(.bold)
-                    Text(marker.unit ?? "").foregroundColor(.secondary)
+                    // Sprint 4.7x: color the value based on flag.
+                    // Apply foregroundColor on the WHOLE HStack (not just the
+                    // Text) — SwiftUI on iOS 17/18 has a bug where
+                    // .foregroundColor on Text().fontWeight(.bold) is silently
+                    // dropped. Wrapping the row in a foregroundColor-modifier
+                    // forces the color through.
+                    HStack(spacing: 4) {
+                        Text(marker.value).fontWeight(.bold)
+                        Text(marker.unit ?? "").foregroundColor(.secondary)
+                    }
+                    .foregroundColor(marker.flag.flatMap(flagColor(for:)) ?? .primary)
                 }
             }
             if let flag = marker.flag, !flag.isEmpty {

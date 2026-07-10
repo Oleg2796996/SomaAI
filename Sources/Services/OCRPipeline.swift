@@ -34,7 +34,20 @@ public final class OCRPipeline {
     /// Run the multi-strategy OCR on a single image. Returns the best
     /// of (enhanced + accurate + correction, binarized + accurate,
     /// no-correction). Never throws — falls back to empty string.
-    func process(image: UIImage) async -> OCRResult {
+    ///
+    /// Sprint 4.7q: when `useTableMode` is true (set for `labResult`
+    /// documents), output is reformatted with column preservation using
+    /// bounding-box aware grouping. Zero extra tokens — the LLM receives
+    /// the same amount of text, but values stay aligned with their
+    /// marker names in the same logical row.
+    func process(image: UIImage, useTableMode: Bool = false) async -> OCRResult {
+        if useTableMode {
+            let enhanced = pre.autoEnhance(image)
+            let (text, conf) = await TableAwareOCR.recognize(image: enhanced, correction: false, minHeight: 0.01)
+            return OCRResult(text: text,
+                             quality: score(text: text, confidence: conf),
+                             confidence: conf, pageCount: 1)
+        }
         // Step 1: auto-enhance (works for >95% of photos)
         let enhanced = pre.autoEnhance(image)
         let primary = await runVision(image: enhanced, correction: true, minHeight: 0.02)
@@ -57,14 +70,15 @@ public final class OCRPipeline {
     }
 
     /// Multi-page variant: returns concatenated text and the worst
-    /// single-page quality.
-    func process(pages: [UIImage]) async -> OCRResult {
+    /// single-page quality. Each page is reformatted with table mode
+    /// when enabled, so the column structure survives page boundaries.
+    func process(pages: [UIImage], useTableMode: Bool = false) async -> OCRResult {
         guard !pages.isEmpty else { return OCRResult(text: "", quality: .poor, confidence: 0, pageCount: 0) }
         var combined = ""
         var worst: OCRQuality = .good
         var confSum: Float = 0
         for (i, page) in pages.enumerated() {
-            let r = await process(image: page)
+            let r = await process(image: page, useTableMode: useTableMode)
             if r.quality == .poor { worst = .poor }
             else if r.quality == .medium && worst == .good { worst = .medium }
             combined += "--- Page \(i + 1) ---\n\(r.text)\n\n"

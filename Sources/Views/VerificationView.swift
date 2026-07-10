@@ -74,10 +74,18 @@ struct VerificationView: View {
                 }
 
                 // ---- Universal: title + date + organisation ----
+                // Sprint 4.7aa: auto-fill testName with a sensible default
+                // based on documentType + date when user lands on this screen
+                // with an empty title. User can still override it.
                 Section(isRU ? "Название и дата" : "Title & Date") {
                     TextField(isRU ? "Название документа" : "Document title", text: $testName)
                     DatePicker(isRU ? "Дата" : "Date", selection: $documentDate, displayedComponents: .date)
                     TextField(isRU ? "Организация" : "Organisation", text: $provider)
+                }
+                .onAppear {
+                    if testName.trimmingCharacters(in: .whitespaces).isEmpty {
+                        testName = Self.suggestedTitle(type: documentType, date: documentDate, isRU: isRU, org: provider)
+                    }
                 }
 
                 // ---- Type-specific body ----
@@ -140,7 +148,29 @@ struct VerificationView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 TextField(isRU ? "Имя" : "Name", text: $marker.name).frame(minWidth: 80)
-                                TextField(isRU ? "Значение" : "Value", text: $marker.value).frame(minWidth: 50)
+                                // Sprint 4.7ad: simple if-else (no closure), with
+                                // .background fill — guaranteed visible regardless
+                                // of SwiftUI foreground color bugs. Red bg = flag
+                                // missing, green = Normal, red = High, orange = Low.
+                                if let f = marker.flag, !f.isEmpty {
+                                    TextField(isRU ? "Значение" : "Value", text: $marker.value)
+                                        .frame(minWidth: 50)
+                                        .fontWeight(.bold)
+                                        .padding(.horizontal, 4)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(flagColor(for: f).opacity(0.22))
+                                        )
+                                } else {
+                                    TextField(isRU ? "Значение" : "Value", text: $marker.value)
+                                        .frame(minWidth: 50)
+                                        .fontWeight(.bold)
+                                        .padding(.horizontal, 4)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(Color.red.opacity(0.22))
+                                        )
+                                }
                                 TextField(isRU ? "Ед." : "Unit", text: Binding(
                                     get: { marker.unit ?? "" },
                                     set: { marker.unit = $0 }
@@ -162,6 +192,7 @@ struct VerificationView: View {
                                 }
                                 .pickerStyle(.menu)
                                 .frame(width: 110)
+                                .tint(flagColor(for: marker.flag ?? ""))
                             }
                             .font(.caption)
                         }
@@ -308,5 +339,46 @@ struct VerificationView: View {
         if medications.contains(where: { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }) { return true }
         if sections.contains(where: { !$0.key.trimmingCharacters(in: .whitespaces).isEmpty && !$0.value.trimmingCharacters(in: .whitespaces).isEmpty }) { return true }
         return false
+    }
+
+    // MARK: - Sprint 4.7aa helpers
+
+    /// Map a flag string to a SwiftUI color. Mirrors LabTestDetailView.flagColor
+    /// so the same value renders the same color in both screens.
+    private func flagColor(for flag: String) -> Color {
+        switch flag.lowercased() {
+        case "high": return .red
+        case "low": return .orange
+        case "normal": return .green
+        default: return .primary
+        }
+    }
+
+    /// Generate a sensible default title from document type + date + org.
+    /// e.g. labResult on 9 July 2026 from "НКЦ2" → "Клинический анализ крови 9 июля 2026 г."
+    /// User can edit it before saving.
+    private static func suggestedTitle(type: DocumentType, date: Date, isRU: Bool, org: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: isRU ? "ru_RU" : "en_US")
+        formatter.dateFormat = isRU ? "d MMMM yyyy 'г.'" : "MMM d, yyyy"
+        let dateStr = formatter.string(from: date)
+        let typeName: String
+        if isRU {
+            switch type {
+            case .labResult: typeName = "Анализ"
+            case .prescription: typeName = "Назначение"
+            case .epicrisis: typeName = "Эпикриз"
+            case .dischargeSummary: typeName = "Выписка"
+            case .consultation: typeName = "Консультация"
+            case .referral: typeName = "Направление"
+            case .imagingReport: typeName = "Снимок"
+            case .vaccination: typeName = "Вакцинация"
+            case .unknown: typeName = "Документ"
+            }
+        } else {
+            typeName = type.displayNameRU
+        }
+        let orgSuffix = org.isEmpty ? "" : " · \(org)"
+        return "\(typeName) · \(dateStr)\(orgSuffix)"
     }
 }

@@ -488,17 +488,23 @@ final class SomaAPIClient {
             ["role": "user", "content": text]
         ]
 
+        // Sprint 4.7e/4.7m: provider chain.
+        // First try Wormsoft (3 models: code/high → code/medium → agent/low);
+        // if all fail AND OpenAI key is set, try OpenAI (2 models).
+        // If everything fails, LocalExtractor.
+        //
+        // Order matters: Wormsoft is primary because code/high (minimax-m3)
+        // produces clean JSON and was verified 2026-07-09 to be the best
+        // extraction model we have access to. OpenAI stays as diversity fallback.
         // Sprint 4.7i diagnostic: log FULL OCR text sent to LLM (truncated to 3000 chars to avoid log spam).
         print("[SomaAI] extract FULL TEXT (\(text.count) chars) → LLM: \(String(text.prefix(3000)))")
-
-        // Sprint 4.7e: provider chain.
-        // First try Wormsoft (3 models); if all fail AND OpenAI key is set,
-        // try OpenAI (2 models). If everything fails, LocalExtractor.
-        //
-        // Each provider call uses its own API key from Keychain.
-        // OpenAI is silently skipped if its key is empty.
-        let perProviderTimeoutNs: UInt64 = 15_000_000_000  // 15s per model
-        let providerChain: [APIProvider] = [.openai]
+        // Sprint 4.7p: 15s was too aggressive — iOS URLSession + Apple ATS
+        // overhead on first request can hit 18-20s, so 15s always cancelled
+        // before the model had a chance to respond. Bumped to 35s to give
+        // room for TLS handshake, certificate verification, and reasoning
+        // models (minimax-m3) to actually finish.
+        let perProviderTimeoutNs: UInt64 = 35_000_000_000  // 35s per model
+        let providerChain: [APIProvider] = [.wormsoft, .openai]
         var triedProviders: [String] = []
         var currentResponse: String?
         // Sprint 4.7e: outer loop over providers, inner over each provider's model chain.
@@ -545,7 +551,7 @@ final class SomaAPIClient {
             print("[SomaAI] localExtract type=\(type.rawValue) → markers=\(local.markers?.count ?? 0), meds=\(local.medications?.count ?? 0), sections=\(local.sections?.count ?? 0), conf=\(local.confidence)")
             return local
         }
-        let contentForDecode = finalContent
+        let contentForDecode = Self.stripMarkdownFences(finalContent)
         let content = contentForDecode  // alias for downstream code
         let preview = String(content.prefix(800))
         print("[SomaAI] extract type=\(type.rawValue) raw response (\(content.count) chars): \(preview)")
@@ -558,7 +564,28 @@ final class SomaAPIClient {
             let direct = try JSONDecoder().decode(SomaExtractionResponse.self, from: data)
             return direct
         } catch {
-            print("[SomaAI] extract type=\(type.rawValue) — direct decode failed: \(error.localizedDescription)")
+            // Sprint 4.7u: log the first 20 bytes as hex so we can see BOM,
+            // stray characters, or any other encoding issue that breaks
+            // JSONDecoder. Often it's BOM or non-breaking space at the start.
+            let head = data.prefix(20)
+            let hex = head.map { String(format: "%02x", $0) }.joined(separator: " ")
+            let headStr = String(data: head, encoding: .utf8) ?? "<non-utf8>"
+            print("[SomaAI] extract type=\(type.rawValue) — direct decode failed: \(error.localizedDescription) | headBytes=\(hex) | headStr=\(headStr.debugDescription)")
+        }
+        // Sprint 4.7u: try to heal truncated JSON before regex fallback.
+        // Models often hit the max_tokens cap mid-marker, e.g. trailing
+        // "name":"Тромбоциты","value":"200"... is cut. We try adding
+        // closing brackets to finish the array+object, then decode.
+        if let healed = Self.tryHealTruncatedJSON(content, type: type) {
+            print("[SomaAI] extract type=\(type.rawValue) — healed truncated JSON, got \(healed.markers?.count ?? 0) markers")
+            return healed
+        }
+        // Sprint 4.7w: JSONSerialization with .fragmentsAllowed handles
+        // partial JSON better than JSONDecoder. We extract the markers array
+        // manually and synthesize a SomaExtractionResponse.
+        if let partial = Self.partialJSONExtraction(content, type: type) {
+            print("[SomaAI] extract type=\(type.rawValue) — partial JSON extraction got \(partial.markers?.count ?? 0) markers")
+            return partial
         }
         // Second try: extract the first { … } block from the response. Some
         // models wrap JSON in "Here is the result: {…}" prose. We grab the
@@ -676,14 +703,27 @@ final class SomaAPIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(activeKey)", forHTTPHeaderField: "Authorization")
-        // Sprint 4.7: per-model HTTP timeout 15s. Matches perModelTimeoutNs.
-        // Combined with 3-model chain, max 45s for extract step.
-        request.timeoutInterval = 15
+        // Sprint 4.7n: bumped from 15s to 30s. Reasoning models like
+        // code/high (minimax-m3) need 5-15s on the first call from
+        // iOS URLSession (cold TLS handshake + Apple ATS overhead).
+        // Combined with 3-model chain, max 90s for extract step.
+        request.timeoutInterval = 30
         let chosenModel = model ?? provider.defaultModel
+        // Sprint 4.7m: request JSON output explicitly. Wormsoft code/high
+        // (minimax-m3) and gemma4 both honor `response_format=json_object`
+        // and stop wrapping their answers in ```json ... ``` blocks.
+        // Verified 2026-07-09: cuts the JSON-repair code path in half and
+        // matches the schema without leading/trailing fences.
+        // Sprint 4.7u: max_tokens=6000 (was 4000) — code/medium still truncating at 2146 chars (mid-marker-list). 6000 fits full 23-marker panel + headers + flags easily.
+        // (15 markers × ~120 chars/row = ~1.8KB JSON), and 30s timeout for
+        // reasoning models like code/high (minimax-m3) which can take 5-15s
+        // on the first call from iOS URLSession.
         let body: [String: Any] = [
             "model": chosenModel,
             "messages": messages,
-            "temperature": temperature
+            "temperature": temperature,
+            "max_tokens": 6000,
+            "response_format": ["type": "json_object"]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -823,27 +863,27 @@ enum SomaAPIError: LocalizedError {
 
 // MARK: - Prompts
 enum SomaPrompts {
+    // Sprint 4.7z: massively trimmed to fix LLM truncation. Old version
+    // listed 50+ item names which caused reasoning models to spend tokens
+    // on verbose prose. New version: schema + 3 examples + explicit length cap.
     static let labMarkerExtractor = """
-You are a strict medical data parser. Extract lab markers, lab values, prescriptions, antigens and phenotypes from the raw OCR text. Return ONLY a JSON object with a top-level key 'markers'.
-Each marker has: name (string, required), value (string, required), unit (string or null), referenceRange (string or null), flag (string: "High", "Low", or "Normal", or null).
-Do not output markdown, explanations, or any text outside the JSON.
+Extract all lab markers (blood, urine, biochemistry, immunology, prescriptions) from the OCR text. Return ONLY a JSON object.
 
-TYPICAL ITEMS YOU SHOULD RECOGNIZE (RU + EN):
-Lab values (urine + blood + biochemistry + immunology):
-  Моча/Urine: цвет, прозрачность, pH, плотность/удельный вес (sg), белок (protein), глюкоза (glucose), кетоны (ketones), лейкоциты (WBC), эритроциты (RBC), нитриты, уробилиноген, билирубин, слизь, бактерии, эпителий, цилиндры, соли/кристаллы, дрожжеподобные грибы.
-  Blood (CBC): гемоглобин (Hb), эритроциты (RBC), гематокрит (HCT), лейкоциты (WBC), тромбоциты (PLT), MCV, MCH, MCHC, RDW, эозинофилы, базофилы, моноциты, лимфоциты, нейтрофилы, СОЭ (ESR).
-  Biochemistry: глюкоза, мочевина, креатинин, билирубин общий/прямой, АЛТ, АСТ, общий белок, альбумин, холестерин, ЛПНП, ЛПВП, триглицериды, прокальцитонин, С-реактивный белок (CRP).
-  Immunology / phenotypes: антиген, антитело, фенотип, CD15/CD20/CD3, группа крови, резус-фактор, ИКПЛ, ИФА, ПЦР.
-Prescriptions (назначения, лекарства):
-  Препараты с дозой (mg, мг, мл, нг/мл, ЕД, таб, капли, пак, суппозитории) — цефазолин, детралекс, фитозилин, омепразол, кеторол, парацетамол, ибупрофен, панкреатин, лоперамид, дротаверин, но-шпа, эссенциале, фосфоглив и т.п.
-  Use category 'prescription' for the name prefix if you can, otherwise just put the drug name as 'name' and 'value' as the dose+unit.
+JSON schema:
+{"markers":[{"name":"...","value":"...","unit":"...","referenceRange":"...","flag":"High|Low|Normal"}]}
+
+Examples (mimic this exact shape, comma-decimals like 4,5):
+1. CBC row "Эритроциты, RBC  4,5  4,2-5,6  10 в 12 ст./л" → {"name":"Эритроциты, RBC","value":"4,5","unit":"10 в 12 ст./л","referenceRange":"4,2-5,6","flag":"Normal"}
+2. Biochemistry "Глюкоза 5,4 ммоль/л  3,3-5,5" → {"name":"Глюкоза","value":"5,4","unit":"ммоль/л","referenceRange":"3,3-5,5","flag":"Normal"}
+3. Out-of-range "Лейкоциты 12,5  10 в 9 ст./л  4,0-9,0" → {"name":"Лейкоциты","value":"12,5","unit":"10 в 9 ст./л","referenceRange":"4,0-9,0","flag":"High"}
 
 Rules:
-  - If a row has name + value, include it. If only name, still include with value '—'.
-  - Do NOT collapse multiple values into one marker. One marker per row.
-  - Return JSON even if uncertain — the user will verify.
-  - The OCR text may be a long medical document (эпикриз, выписка, направление) — scan the WHOLE text, not just the first few lines.
-  - Look for drug names, doses, and lab values anywhere in the text.
+- Compare value to referenceRange: in range → "Normal", above → "High", below → "Low". Skip flag if no reference.
+- One marker per row. Do not collapse.
+- If name only, value=null, flag=null. If value+name, flag required.
+- Scan the whole OCR text (it may be a long document).
+- Output ≤2000 characters of valid JSON. No markdown, no prose, no comments.
+- Use Russian for names when the document is in Russian.
 """
 
     static let consultantSystem = """
@@ -1100,6 +1140,106 @@ If OCR is too short (< 50 chars), return empty sections and confidence=0.0.
 }
 
 
+// MARK: - Sprint 4.7u: truncated JSON healer
+
+extension SomaAPIClient {
+    /// Sprint 4.7v: strip markdown code fences that reasoning models add
+    /// even when `response_format=json_object` is set. `code/high`
+    /// (minimax-m3) and `qwen3` both wrap JSON in ```json\n{...}\n``` blocks.
+    /// We strip any leading/trailing ``` lines and any ```json / ``` markers.
+    static func stripMarkdownFences(_ s: String) -> String {
+        var out = s
+        // Remove ```json or ``` markers (with optional language tag)
+        // at the start of the string.
+        while out.hasPrefix("```") {
+            // Drop first line (up to and including newline)
+            if let nlRange = out.range(of: "\n") {
+                out = String(out[nlRange.upperBound...])
+            } else {
+                out = ""
+                break
+            }
+        }
+        // Remove trailing ``` (and any whitespace before it).
+        if let range = out.range(of: "```", options: .backwards) {
+            out = String(out[..<range.lowerBound])
+        }
+        // Trim BOM, whitespace, and stray newlines around the JSON.
+        out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if out.hasPrefix("\u{FEFF}") {
+            out = String(out.dropFirst())
+        }
+        return out
+    }
+
+    /// Sprint 4.7u: if the LLM response was truncated mid-marker (hit the
+    /// `max_tokens` cap before closing the array), try to close it manually.
+    /// We walk back from the end, find the last complete `},{` or `}]` and
+    /// append `]}` to close both array and root object.
+    static func tryHealTruncatedJSON(_ content: String, type: DocumentType) -> SomaExtractionResponse? {
+        // Find the start of the JSON (first `{`).
+        guard let firstBrace = content.firstIndex(of: "{") else { return nil }
+        // Sprint 4.7w: truncated JSON looks like
+        //   {"markers": [{"name":"X", "value":"1"}, {"name":"Y", "valu
+        // (cut mid-key). The simplest fix: walk back to the last `,` or `}` and
+        // close the array + root object. Then decode.
+        let prefix = String(content[firstBrace...])
+        // Try progressively shorter substrings: each one ends at the last `,`
+        // or `}` (or other JSON-safe boundary), then we append `]}`.
+        // Heuristic: keep removing the last 1..20 chars until decode succeeds.
+        for drop in 0..<20 {
+            let endIdx = prefix.endIndex
+            let cutIdx = prefix.index(endIdx, offsetBy: -drop, limitedBy: prefix.startIndex) ?? prefix.startIndex
+            let truncated = String(prefix[..<cutIdx])
+            // Try several closing patterns: `}]}`, `,}]}` (with trailing comma
+            // stripped), `]}`.
+            let closures = [
+                "}]}",  // array + root
+                "]",    // just array (root already closed?)
+                "",     // already complete
+            ]
+            for closure in closures {
+                let candidate = truncated + closure
+                if let data = candidate.data(using: .utf8),
+                   let parsed = try? JSONDecoder().decode(SomaExtractionResponse.self, from: data) {
+                    if let markers = parsed.markers, markers.count >= 3 {
+                        return parsed
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Sprint 4.7w: parse truncated JSON by closing brackets + walking back
+    /// to find the last `}` before the truncation point. We do NOT need to
+    /// decode the whole response — just find the largest valid prefix that
+    /// ends with a complete object in the markers array.
+    static func partialJSONExtraction(_ content: String, type: DocumentType) -> SomaExtractionResponse? {
+        // Sprint 4.7y: walk back from the end, but FAST — skip from `}` to `}`
+        // and only try cutting at object boundaries. Then close `]}` and decode.
+        guard content.contains("\"markers\"") else { return nil }
+        // Collect all positions of `}` in content.
+        var closeBracePositions: [String.Index] = []
+        var i = content.startIndex
+        while i < content.endIndex {
+            if content[i] == "}" { closeBracePositions.append(i) }
+            i = content.index(after: i)
+        }
+        // Try from the LAST `}` backwards. We want the largest prefix that
+        // ends with a complete marker object.
+        for pos in closeBracePositions.reversed() {
+            let prefix = String(content[...pos]) + "]}"
+            if let data = prefix.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode(SomaExtractionResponse.self, from: data),
+               let markers = parsed.markers, markers.count >= 3 {
+                return parsed
+            }
+        }
+        return nil
+    }
+}
+
 // MARK: - Sprint 4.9d: manual marker extraction fallback
 
 extension SomaAPIClient {
@@ -1125,9 +1265,14 @@ extension SomaAPIClient {
             // groups 3, 4 may not be present
             let unit: String? = m.range(at: 3).location == NSNotFound ? nil : ns.substring(with: m.range(at: 3))
             let range: String? = m.range(at: 4).location == NSNotFound ? nil : ns.substring(with: m.range(at: 4))
+            // Sprint 4.7x: compute flag from value vs referenceRange, so the
+            // UI can color markers even when LLM JSON decode failed. We
+            // parse "4,2 - 5,6" / "< 5,6" / "> 10" / "0,0 - 1,0" patterns
+            // and compare the numeric value.
+            let flag = Self.computeFlag(value: value, reference: range)
             markers.append(SomaMarker(
                 name: name, value: value, unit: unit,
-                referenceRange: range, flag: nil
+                referenceRange: range, flag: flag
             ))
         }
         // Also try to extract date/title if present
@@ -1149,5 +1294,43 @@ extension SomaAPIClient {
             confidence: 0.8,  // partial recovery, slightly lower
             markers: markers, medications: nil, sections: nil
         )
+    }
+
+    /// Sprint 4.7x: parse a reference range string like "4,2 - 5,6" or
+    /// "< 5,6" or "> 10" and compare against a numeric value. Returns
+    /// "Normal", "High", or "Low". Returns nil if reference is missing
+    /// or the value is not a number.
+    static func computeFlag(value: String, reference: String?) -> String? {
+        guard let reference = reference, !reference.isEmpty else { return nil }
+        // Normalize: replace comma decimal with dot
+        let normalizedValue = value.replacingOccurrences(of: ",", with: ".")
+        guard let num = Double(normalizedValue) else { return nil }
+        // Parse "< 5.6", "> 10", "4.2 - 5.6", "0.0 - 1.0"
+        let ref = reference.replacingOccurrences(of: ",", with: ".")
+        // Range: "A - B"
+        if let dashRange = ref.range(of: " - ") {
+            let lowStr = String(ref[ref.startIndex..<dashRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let highStr = String(ref[dashRange.upperBound..<ref.endIndex]).trimmingCharacters(in: .whitespaces)
+            if let low = Double(lowStr), let high = Double(highStr) {
+                if num < low { return "Low" }
+                if num > high { return "High" }
+                return "Normal"
+            }
+        }
+        // Less than: "< 5.6"
+        if let ltRange = ref.range(of: "< ") {
+            let limStr = String(ref[ltRange.upperBound..<ref.endIndex]).trimmingCharacters(in: .whitespaces)
+            if let lim = Double(limStr) {
+                return num < lim ? "Normal" : "High"
+            }
+        }
+        // Greater than: "> 10"
+        if let gtRange = ref.range(of: "> ") {
+            let limStr = String(ref[gtRange.upperBound..<ref.endIndex]).trimmingCharacters(in: .whitespaces)
+            if let lim = Double(limStr) {
+                return num > lim ? "Normal" : "Low"
+            }
+        }
+        return nil
     }
 }

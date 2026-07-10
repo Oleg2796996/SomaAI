@@ -171,14 +171,23 @@ struct AddLabTestView: View {
     private func handleSingleImageOCR(_ image: UIImage) async {
         isProcessing = true
         defer { isProcessing = false }
-        let result = await OCRPipeline.shared.process(image: image)
+        // Sprint 4.7r: table-aware OCR auto-enabled for labResult documents.
+        // The user selects documentType before scanning (default: labResult),
+        // and smartClassify's regex precheck confirms/refines it. For lab
+        // panels, Vision Framework loses the column structure on the
+        // "Result" column without bounding-box aware grouping.
+        let useTable = (documentType == .labResult) || Self.tableModeEnabled
+        print("[SomaAI] tableMode=" + useTable.description + " docType=" + documentType.rawValue)
+        let result = await OCRPipeline.shared.process(image: image, useTableMode: useTable)
         applyOCRResult(result, source: "single image")
     }
 
     private func handleScannedPages(_ pages: [UIImage]) async {
         isProcessing = true
         defer { isProcessing = false }
-        let result = await OCRPipeline.shared.process(pages: pages)
+        let useTable = (documentType == .labResult) || Self.tableModeEnabled
+        print("[SomaAI] tableMode=" + useTable.description + " docType=" + documentType.rawValue)
+        let result = await OCRPipeline.shared.process(pages: pages, useTableMode: useTable)
         applyOCRResult(result, source: "scanner (\(pages.count) pages)")
     }
 
@@ -198,7 +207,9 @@ struct AddLabTestView: View {
             showingErrorAlert = true
             return
         }
-        let result = await OCRPipeline.shared.process(pages: images)
+        let useTable = (documentType == .labResult) || Self.tableModeEnabled
+        print("[SomaAI] tableMode=" + useTable.description + " docType=" + documentType.rawValue)
+        let result = await OCRPipeline.shared.process(pages: images, useTableMode: useTable)
         applyOCRResult(result, source: "photos (\(images.count))")
     }
 
@@ -221,8 +232,23 @@ struct AddLabTestView: View {
             showingErrorAlert = true
             return
         }
-        let result = await OCRPipeline.shared.process(pages: images)
+        let useTable = (documentType == .labResult) || Self.tableModeEnabled
+        print("[SomaAI] tableMode=" + useTable.description + " docType=" + documentType.rawValue)
+        let result = await OCRPipeline.shared.process(pages: images, useTableMode: useTable)
         applyOCRResult(result, source: "PDF (\(images.count) pages)")
+    }
+
+    /// Sprint 4.7q: enable table-aware OCR (Sprint 4.7q) via launch
+    /// argument `-SOMA_TABLE_MODE 1` or env `SOMA_TABLE_MODE=1`. Default
+    /// OFF so existing users see no behaviour change. Once verified,
+    /// we'll auto-enable for `labResult` documents after smartClassify
+    /// has run.
+    private static var tableModeEnabled: Bool {
+        if let arg = UserDefaults.standard.string(forKey: "SOMA_TABLE_MODE"),
+           ["1", "true", "yes"].contains(arg.lowercased()) { return true }
+        if let env = ProcessInfo.processInfo.environment["SOMA_TABLE_MODE"],
+           ["1", "true", "yes"].contains(env.lowercased()) { return true }
+        return false
     }
 
     /// Centralised post-OCR handler. Stores the text, surfaces
