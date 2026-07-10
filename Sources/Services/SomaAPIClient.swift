@@ -1337,6 +1337,7 @@ extension SomaAPIClient {
                 .replacingOccurrences(of: "≥", with: "")
                 .trimmingCharacters(in: .whitespaces)
             if let lim = Double(limStr) { return num > lim ? "Normal" : "Low" }
+        }
         return nil
     }
 }
