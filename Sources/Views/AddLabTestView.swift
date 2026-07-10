@@ -115,13 +115,17 @@ struct AddLabTestView: View {
             }
             .fileImporter(
                 isPresented: $isImportingPDF,
-                allowedContentTypes: [.pdf],
+                // Sprint 4.7ai: allow .pdf plus the broader PDF/data UTI
+                // set so AirDrop-received PDFs (which sometimes lack the
+                // public.pdf UTI) still appear in the picker.
+                allowedContentTypes: [.pdf, .data, .item],
                 onCompletion: { result in
                     switch result {
                     case .success(let url):
+                        print("[SomaAI] fileImporter picked url=\(url.lastPathComponent) pathExt=\(url.pathExtension)")
                         Task { await handlePDFSelection(url: url) }
                     case .failure(let error):
-                        print("PDF Error: \(error)")
+                        print("[SomaAI] fileImporter Error: \(error.localizedDescription)")
                     }
                 }
             )
@@ -216,8 +220,16 @@ struct AddLabTestView: View {
     private func handlePDFSelection(url: URL) async {
         isProcessing = true
         defer { isProcessing = false }
+        // Sprint 4.7ai: iOS 14+ requires explicit security-scoped resource
+        // access for files returned by fileImporter/UIDocumentPicker.
+        // Without this, PDFDocument(url:) silently returns nil →
+        // "Could not open PDF" alert with no actionable log.
+        let didStart = url.startAccessingSecurityScopedResource()
+        defer { if didStart { url.stopAccessingSecurityScopedResource() } }
+        print("[SomaAI] handlePDFSelection url=\(url.lastPathComponent) pathExt=\(url.pathExtension) scope=\(didStart)")
         guard let pdf = PDFDocument(url: url) else {
-            apiError = "Could not open PDF."
+            print("[SomaAI] PDF Error: PDFDocument(url:) returned nil for \(url.lastPathComponent)")
+            apiError = "Could not open PDF. The file may be encrypted, corrupted, or in an unsupported format."
             showingErrorAlert = true
             return
         }
