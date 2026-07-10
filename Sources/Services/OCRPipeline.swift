@@ -40,26 +40,36 @@ public final class OCRPipeline {
     /// bounding-box aware grouping. Zero extra tokens — the LLM receives
     /// the same amount of text, but values stay aligned with their
     /// marker names in the same logical row.
-    func process(image: UIImage, useTableMode: Bool = false) async -> OCRResult {
+    /// Sprint 4.7an: when isFromPDFRender is true, the image is a clean
+    /// black-on-white text render from PDFKit (already high contrast),
+    /// so autoEnhance (which lowers saturation to 0.9) makes the page
+    /// GREY and Vision OCR drops the table rows. Bypass autoEnhance for
+    /// PDF renders so Vision sees full black-on-white contrast.
+    func process(image: UIImage, useTableMode: Bool = false, isFromPDFRender: Bool = false) async -> OCRResult {
         if useTableMode {
-            let enhanced = pre.autoEnhance(image)
-            let (text, conf) = await TableAwareOCR.recognize(image: enhanced, correction: false, minHeight: 0.01)
+            let source = isFromPDFRender ? image : pre.autoEnhance(image)
+            let (text, conf) = await TableAwareOCR.recognize(image: source, correction: false, minHeight: 0.01)
             return OCRResult(text: text,
                              quality: score(text: text, confidence: conf),
                              confidence: conf, pageCount: 1)
         }
-        // Step 1: auto-enhance (works for >95% of photos)
-        let enhanced = pre.autoEnhance(image)
-        let primary = await runVision(image: enhanced, correction: true, minHeight: 0.02)
+        let source = isFromPDFRender ? image : pre.autoEnhance(image)
+        let primary = await runVision(image: source, correction: true, minHeight: 0.02)
         let primaryQuality = score(text: primary.text, confidence: primary.confidence)
         if primaryQuality == .good || primaryQuality == .medium {
             return OCRResult(text: primary.text, quality: primaryQuality,
                              confidence: primary.confidence, pageCount: 1)
         }
         // Step 2: binarise + accurate + no language correction.
-        let binary = pre.binarize(enhanced)
-        let fallback = await runVision(image: binary, correction: false, minHeight: 0.01)
-        // Pick the higher-confidence result.
+        // Sprint 4.7an: only binarize when source was enhanced (otherwise
+        // the original is already high-contrast and binarize over-darkens).
+        let binaryImage: UIImage
+        if isFromPDFRender {
+            binaryImage = source  // already clean
+        } else {
+            binaryImage = pre.binarize(source)
+        }
+        let fallback = await runVision(image: binaryImage, correction: false, minHeight: 0.01)
         if fallback.confidence > primary.confidence {
             return OCRResult(text: fallback.text, quality: score(text: fallback.text, confidence: fallback.confidence),
                              confidence: fallback.confidence, pageCount: 1)
@@ -72,13 +82,16 @@ public final class OCRPipeline {
     /// Multi-page variant: returns concatenated text and the worst
     /// single-page quality. Each page is reformatted with table mode
     /// when enabled, so the column structure survives page boundaries.
-    func process(pages: [UIImage], useTableMode: Bool = false) async -> OCRResult {
+    /// Sprint 4.7an: caller passes isFromPDFRender=true for clean PDF
+    /// renders (skip autoEnhance). For photos (default false) the
+    /// enhancement chain stays active.
+    func process(pages: [UIImage], useTableMode: Bool = false, isFromPDFRender: Bool = false) async -> OCRResult {
         guard !pages.isEmpty else { return OCRResult(text: "", quality: .poor, confidence: 0, pageCount: 0) }
         var combined = ""
         var worst: OCRQuality = .good
         var confSum: Float = 0
         for (i, page) in pages.enumerated() {
-            let r = await process(image: page, useTableMode: useTableMode)
+            let r = await process(image: page, useTableMode: useTableMode, isFromPDFRender: isFromPDFRender)
             if r.quality == .poor { worst = .poor }
             else if r.quality == .medium && worst == .good { worst = .medium }
             combined += "--- Page \(i + 1) ---\n\(r.text)\n\n"

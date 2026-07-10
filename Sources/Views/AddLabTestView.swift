@@ -246,7 +246,11 @@ struct AddLabTestView: View {
         }
         let useTable = (documentType == .labResult) || Self.tableModeEnabled
         print("[SomaAI] tableMode=" + useTable.description + " docType=" + documentType.rawValue)
-        let result = await OCRPipeline.shared.process(pages: images, useTableMode: useTable)
+        // Sprint 4.7an: PDF renders are already clean black-on-white at 5x
+        // scale, so pass isFromPDFRender=true to skip autoEnhance (which
+        // would otherwise lower saturation and turn tables grey, causing
+        // Vision OCR to drop most rows).
+        let result = await OCRPipeline.shared.process(pages: images, useTableMode: useTable, isFromPDFRender: true)
         applyOCRResult(result, source: "PDF (\(images.count) pages)")
     }
 
