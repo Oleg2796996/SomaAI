@@ -121,13 +121,23 @@ public final class OCRPipeline {
 
     // MARK: - Quality scoring
 
+    /// Sprint 4.7am: loosened thresholds so PDF scans (where Vision on iOS
+    /// 26.5 simulator caps at ~50-65% confidence for Russian text) don't
+    /// get rejected as "poor". Was: .good requires >0.7 confidence AND
+    /// >30% cyrillic, .medium requires >0.3 cyrillic — both unrealistic
+    /// for medical PDF scans. New: trust cyrillicRatio (real text) and
+    /// downgrade confidence bar to >0.5 for good, >0.3 for medium.
     private func score(text: String, confidence: Float) -> OCRQuality {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let cyrillic = trimmed.unicodeScalars.filter { (0x0400...0x04FF).contains($0.value) }.count
         let total = max(1, trimmed.count)
         let cyrillicRatio = Float(cyrillic) / Float(total)
-        if trimmed.count > 1000 && cyrillicRatio > 0.30 && confidence > 0.7 { return .good }
+        // Real text in Russian lab reports: usually 30-70% cyrillic.
+        // Numbers, dashes, punctuation, and unit names (g/l, ммоль/л)
+        // account for the rest. So cyrillicRatio > 0.15 is reliable.
+        if trimmed.count > 1000 && cyrillicRatio > 0.15 && confidence > 0.5 { return .good }
         if trimmed.count > 500 && cyrillicRatio > 0.10 { return .medium }
+        if trimmed.count > 200 && cyrillicRatio > 0.05 { return .medium }
         return .poor
     }
 }
