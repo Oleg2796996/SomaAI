@@ -18,7 +18,15 @@ extension PDFPage {
             UIColor.white.setFill()
             ctx.fill(CGRect(origin: .zero, size: pixelSize))
             ctx.cgContext.saveGState()
-            ctx.cgContext.scaleBy(x: scale, y: scale)
+            // Sprint 4.7ak: PDF coordinate system has Y growing UPWARD
+            // (origin bottom-left), UIGraphicsImageRenderer has Y growing
+            // DOWNWARD (origin top-left, like UIKit). Without the flip,
+            // draw(with:to:) renders text upside-down/mirrored — Vision
+            // OCR returns 30% confidence and garbled output like
+            // "ГОЯТС" instead of "СТРОГО". Translate to the bottom, then
+            // scale Y by -1 to flip the page right-side up.
+            ctx.cgContext.translateBy(x: 0, y: pageRect.height)
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
             draw(with: .mediaBox, to: ctx.cgContext)
             ctx.cgContext.restoreGState()
         }

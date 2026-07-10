@@ -316,10 +316,36 @@ struct AddLabTestView: View {
                 // Sprint 4.9b: auto-fill date from LLM extraction if available
                 // (extraction.date is ISO "YYYY-MM-DD" from LLM, or "DD.MM.YYYY"
                 // from LocalExtractor). Falls back to today if not parseable.
+                // Sprint 4.7al: LLM often returns today's date when it cannot
+                // find a date in the document. We treat today's date as
+                // "no useful date" and fall back to LocalExtractor's regex
+                // scan over the OCR text.
+                var dateFromExtraction = false
                 if let dateString = extraction.date, !dateString.isEmpty,
                    let parsed = Self.parseExtractionDate(dateString) {
-                    date = parsed
-                    print("[SomaAI] document date set from extraction: \(parsed) (was \(date))")
+                    // Reject "today" answers: if LLM's date is within 1 day of
+                    // now, assume it was a guess and look in the OCR text.
+                    let calendar = Calendar.current
+                    let isToday = calendar.isDateInToday(parsed)
+                    if !isToday {
+                        date = parsed
+                        dateFromExtraction = true
+                        print("[SomaAI] document date set from extraction: \(parsed) (was \(date))")
+                    } else {
+                        print("[SomaAI] LLM returned today's date (\(parsed)) — treating as 'not found'")
+                    }
+                }
+                if !dateFromExtraction {
+                    // Fallback: scan the OCR text for any DD.MM.YYYY-style
+                    // date. LocalExtractor.extractBestDate uses Russian
+                    // month names + numeric formats.
+                    if let found = LocalExtractor.extractBestDate(ocr),
+                       let parsed = Self.parseExtractionDate(found) {
+                        date = parsed
+                        print("[SomaAI] document date set from OCR-text scan: \(parsed) (found='\(found)')")
+                    } else {
+                        print("[SomaAI] document date left as today: \(date)")
+                    }
                 }
                 // Auto-set document title for unknown type to avoid blank state
                 if documentType == .unknown, testName.trimmingCharacters(in: .whitespaces).isEmpty {
