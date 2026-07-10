@@ -99,17 +99,20 @@ struct LabTestDetailView: View {
                 }
                 Spacer()
                 HStack(spacing: 4) {
-                    // Sprint 4.7x: color the value based on flag.
-                    // Apply foregroundColor on the WHOLE HStack (not just the
-                    // Text) — SwiftUI on iOS 17/18 has a bug where
-                    // .foregroundColor on Text().fontWeight(.bold) is silently
-                    // dropped. Wrapping the row in a foregroundColor-modifier
-                    // forces the color through.
+                    // Sprint 4.7ag: switch from .foregroundColor (dropped on
+                    // iOS 26.5 simulator per 4.7ad post-mortem) to a colored
+                    // capsule background around the value. Color is a 22% tint
+                    // of flagColor so the row text stays legible.
                     HStack(spacing: 4) {
                         Text(marker.value).fontWeight(.bold)
                         Text(marker.unit ?? "").foregroundColor(.secondary)
                     }
-                    .foregroundColor(marker.flag.flatMap(flagColor(for:)) ?? .primary)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(
+                        Capsule().fill(
+                            (marker.flag.flatMap(flagColor(for:)) ?? Color.red).opacity(0.22)
+                        )
+                    )
                 }
             }
             if let flag = marker.flag, !flag.isEmpty {
