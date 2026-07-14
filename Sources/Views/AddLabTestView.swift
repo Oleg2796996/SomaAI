@@ -519,9 +519,9 @@ struct AddLabTestView: View {
                 print("[SomaAI] processAndVerify: using NATIVE markers (\(native.count)), skipping LLM")
                 documentType = .labResult
                 pendingMarkers = native.map { m in
-                    PendingMarker(
+                    SomaMarker(
                         name: m.name,
-                        value: m.value,
+                        value: m.value ?? "—",
                         unit: m.unit,
                         referenceRange: m.referenceRange,
                         flag: computeFlag(name: m.name, value: m.value, range: m.referenceRange)
