@@ -46,15 +46,28 @@ public final class OCRPipeline {
     /// GREY and Vision OCR drops the table rows. Bypass autoEnhance for
     /// PDF renders so Vision sees full black-on-white contrast.
     func process(image: UIImage, useTableMode: Bool = false, isFromPDFRender: Bool = false) async -> OCRResult {
+        // Sprint 4.7ao-pdf-2: PDF renders at 5x scale on A4 make body
+        // text 0.5-0.8% of page height. The previous minimumTextHeight
+        // of 0.01 (1%) was dropping small numeric values, units, and
+        // reference ranges — leaving only the lower, larger-font rows
+        // ("Сперматозоиды...", "Анализы выполнены на оборудовании...",
+        // "Стр. N из M"). Photos don't need this — they come in larger
+        // and are already subject to autoEnhance, which compensates.
+        let pdfMinHeight: Float = 0.006
         if useTableMode {
             let source = isFromPDFRender ? image : pre.autoEnhance(image)
-            let (text, conf) = await TableAwareOCR.recognize(image: source, correction: false, minHeight: 0.01)
+            let minHeight: Float = isFromPDFRender ? pdfMinHeight : 0.01
+            let (text, conf) = await TableAwareOCR.recognize(image: source, correction: false, minHeight: minHeight)
             return OCRResult(text: text,
                              quality: score(text: text, confidence: conf),
                              confidence: conf, pageCount: 1)
         }
         let source = isFromPDFRender ? image : pre.autoEnhance(image)
-        let primary = await runVision(image: source, correction: true, minHeight: 0.02)
+        // Photos keep the original 0.02 threshold (a high bar — they get
+        // autoEnhance preprocessing and usually produce >1000 chars at
+        // 0.02). PDFs use the much lower 0.006 to keep numeric values.
+        let primaryMinHeight: Float = isFromPDFRender ? pdfMinHeight : 0.02
+        let primary = await runVision(image: source, correction: true, minHeight: primaryMinHeight)
         let primaryQuality = score(text: primary.text, confidence: primary.confidence)
         if primaryQuality == .good || primaryQuality == .medium {
             return OCRResult(text: primary.text, quality: primaryQuality,
@@ -69,7 +82,7 @@ public final class OCRPipeline {
         } else {
             binaryImage = pre.binarize(source)
         }
-        let fallback = await runVision(image: binaryImage, correction: false, minHeight: 0.01)
+        let fallback = await runVision(image: binaryImage, correction: false, minHeight: isFromPDFRender ? 0.006 : 0.01)
         if fallback.confidence > primary.confidence {
             return OCRResult(text: fallback.text, quality: score(text: fallback.text, confidence: fallback.confidence),
                              confidence: fallback.confidence, pageCount: 1)
