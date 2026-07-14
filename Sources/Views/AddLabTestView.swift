@@ -15,6 +15,14 @@ struct AddLabTestView: View {
     @State private var date: Date = Date()
     @State private var documentType: DocumentType = .labResult
     @State private var isPressed = false
+    // Sprint 4.7ao-pdf-5g: true once `date` has been set from OCR
+    // extraction (LLM returned a non-today date) or from the
+    // LocalExtractor.scan fallback. Drives the small "⏳ will be
+    // detected after processing" hint under the DatePicker so the
+    // user understands that the date they see right after file
+    // selection is just a default — it's NOT the actual sample date
+    // until they tap Process.
+    @State private var dateIsFromExtraction: Bool = false
 
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var isImportingPDF = false
@@ -45,6 +53,21 @@ struct AddLabTestView: View {
                     // and shown on the verification screen, so we omit the
                     // form field here.
                     DatePicker(Localization.somaTranslate("field_date", language: language), selection: $date, displayedComponents: .date)
+                    // Sprint 4.7ao-pdf-5g: small caption that clarifies
+                    // whether the displayed date is the default
+                    // (today, until OCR runs) or a real value extracted
+                    // from the document. Without this hint, the user
+                    // sees today's date right after selecting a file
+                    // and assumes OCR misread the sample date.
+                    if !dateIsFromExtraction {
+                        Text("⏳ Будет определена после обработки (сейчас — сегодня)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("✅ Определена из документа")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                    }
                 }
 
                 Section {
@@ -364,11 +387,16 @@ struct AddLabTestView: View {
                     if let found = LocalExtractor.extractBestDate(ocr),
                        let parsed = Self.parseExtractionDate(found) {
                         date = parsed
+                        dateFromExtraction = true
                         print("[SomaAI] document date set from OCR-text scan: \(parsed) (found='\(found)')")
                     } else {
                         print("[SomaAI] document date left as today: \(date)")
                     }
                 }
+                // Sprint 4.7ao-pdf-5g: bubble the dateIsFromExtraction
+                // flag up to the @State so the DatePicker can show a
+                // small hint that the displayed date is the real one.
+                dateIsFromExtraction = dateFromExtraction
                 // Auto-set document title for unknown type to avoid blank state
                 if documentType == .unknown, testName.trimmingCharacters(in: .whitespaces).isEmpty {
                     let isRU = (language == "Русский" || language == "Russian")
