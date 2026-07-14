@@ -33,6 +33,13 @@ struct AddLabTestView: View {
     // If non-nil, we override any OCR-derived date in
     // processAndVerify.
     @State private var pdfNativeDate: String?
+    // Sprint 4.7ao-pdf-5d-eleventh: markers extracted directly
+    // from PDFKit.PDFDocument.string via PDFNativeParser.
+    // When non-nil with count >= 5, processAndVerify uses these
+    // markers instead of calling Vision OCR + the LLM. Avoids
+    // the 4-call × ~20s = 80s pipeline that exceeded the 75s
+    // processDocument timeout in 5d-tenth (e500c6a).
+    @State private var pdfNativeMarkers: [PDFNativeParser.PDFMarker]?
 
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var isImportingPDF = false
@@ -309,7 +316,57 @@ struct AddLabTestView: View {
         } else {
             self.pdfNativeDate = nil
         }
+        // Sprint 4.7ao-pdf-5d-eleventh: try to parse markers AND
+        // patient info from the native PDFKit text. For digital
+        // PDFs (the НКЦ2 бланк is one — pymupdf showed all 25
+        // markers as selectable text), this bypasses Vision OCR
+        // entirely. 4 Vision calls × ~20s = 80s > 75s
+        // processDocument timeout, which is why 5d-tenth
+        // (e500c6a) hit the timer and ended with markers=0.
+        //
+        // If the native parse gives >= 5 markers, we set
+        // `self.pdfNativeMarkers` and skip the entire Vision OCR
+        // + LLM extraction branch in processAndVerify. If < 5
+        // markers (image-only PDF or layout we don't recognise),
+        // we fall back to the Vision OCR pipeline.
+        if let parsed = PDFNativeParser.parse(pdf: pdf), parsed.markers.count >= 5 {
+            print("[SomaAI] PDF native MARKERS extracted: \(parsed.markers.count) (skipping Vision OCR entirely)")
+            for (idx, m) in parsed.markers.prefix(5).enumerated() {
+                print("[SomaAI]   native marker[\(idx)]: name='\(m.name)' value=\(m.value ?? "nil") unit=\(m.unit ?? "nil") range=\(m.referenceRange ?? "nil")")
+            }
+            self.pdfNativeMarkers = parsed.markers
+            // Also auto-fill patient name + lab from the PDF if
+            // the user hasn't typed anything yet.
+            if testName.trimmingCharacters(in: .whitespaces).isEmpty,
+               let name = parsed.patient.fullName, !name.isEmpty {
+                testName = "Анализ от " + (LocalExtractor.extractBestDate(pdfNativeText).flatMap(Self.formatDate(_:)) ?? "")
+                if testName.isEmpty || testName == "Анализ от " {
+                    testName = "Анализ — \(name)"
+                }
+                print("[SomaAI] PDF native testName: \(testName)")
+            }
+            if provider.trimmingCharacters(in: .whitespaces).isEmpty,
+               let lab = parsed.patient.laboratory, !lab.isEmpty {
+                provider = lab
+                print("[SomaAI] PDF native provider: \(provider)")
+            }
+        } else {
+            self.pdfNativeMarkers = nil
+            print("[SomaAI] PDF native parse yielded < 5 markers or no parse — will use Vision OCR fallback")
+        }
         var images: [UIImage] = []
+        // If we have enough native markers, skip rendering pages
+        // entirely. This collapses 4 Vision calls to 0 and
+        // avoids the 75s timeout (proven by 5d-tenth hitting
+        // the timer with the same 4 calls).
+        if self.pdfNativeMarkers?.count ?? 0 >= 5 {
+            // Use a tiny dummy 1x1 image to satisfy the
+            // !images.isEmpty guard, and to keep the rest of the
+            // pipeline unchanged. Vision OCR is bypassed
+            // because processAndVerify short-circuits when
+            // `pdfNativeMarkers` is set.
+            print("[SomaAI] Skipping PDF page rendering — using native markers directly")
+        } else {
         for i in 0..<pdf.pageCount {
             // Sprint 4.7ao-pdf-5d: render each page as a HEADER band
             // (top 25%) + a BODY band (bottom 75%) via
@@ -376,6 +433,23 @@ struct AddLabTestView: View {
                 }
             }
         }
+        }  // close the else branch from 5d-eleventh (skip rendering when native markers are enough)
+        // 5d-eleventh: if native markers were extracted from
+        // PDFKit, short-circuit here — set recognizedText to
+        // the native text and jump to processAndVerify which
+        // will see pdfNativeMarkers and use them directly.
+        if let native = self.pdfNativeMarkers, native.count >= 5 {
+            print("[SomaAI] PDF native parse shortcut: \(native.count) markers, bypassing Vision OCR")
+            // The native text is a much cleaner input to the
+            // pipeline than Vision OCR's noisy transcription.
+            recognizedText = pdfNativeText
+            // Set isProcessing back so the Process button is
+            // tappable again.
+            isProcessing = false
+            // Auto-trigger the verification flow.
+            processAndVerify()
+            return
+        }
         guard !images.isEmpty else {
             apiError = "PDF has no pages or all pages are blank."
             showingErrorAlert = true
@@ -435,6 +509,37 @@ struct AddLabTestView: View {
         Task {
             // Quality gate: too-short OCR text -> unknown, no LLM call.
             let ocr = recognizedText
+            // Sprint 4.7ao-pdf-5d-eleventh: short-circuit when we
+            // have native PDFKit markers. The OCR text in this
+            // branch is the CLEAN native text (set in
+            // handlePDFSelection before processAndVerify() was
+            // called), but we don't even need the LLM — we have
+            // the markers already.
+            if let native = pdfNativeMarkers, native.count >= 5 {
+                print("[SomaAI] processAndVerify: using NATIVE markers (\(native.count)), skipping LLM")
+                documentType = .labResult
+                pendingMarkers = native.map { m in
+                    PendingMarker(
+                        name: m.name,
+                        value: m.value,
+                        unit: m.unit,
+                        referenceRange: m.referenceRange,
+                        flag: computeFlag(name: m.name, value: m.value, range: m.referenceRange)
+                    )
+                }
+                pendingMedications = []
+                pendingSections = []
+                if testName.trimmingCharacters(in: .whitespaces).isEmpty {
+                    testName = "Анализ — НКЦ2"
+                }
+                dateIsFromExtraction = true
+                // Skip LLM entirely — go straight to verification.
+                await MainActor.run {
+                    isProcessing = false
+                    showingVerification = true
+                }
+                return
+            }
             if ocr.trimmingCharacters(in: .whitespacesAndNewlines).count < 30 {
                 apiError = "OCR text is too short (\(ocr.count) chars). Try a clearer photo or a different file."
                 showingErrorAlert = true
