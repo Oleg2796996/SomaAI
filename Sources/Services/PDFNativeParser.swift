@@ -88,22 +88,29 @@ enum PDFNativeParser {
     }
 
     static func parse(pdf: PDFDocument) -> PDFParseResult? {
-        guard let text = pdf.string, text.count > 200 else {
+        // iOS PDFKit may use \r, \n, or \r\n as line separators.
+        // Normalise to \n first.
+        guard let raw = pdf.string, raw.count > 200 else {
+            print("[SomaAI] PDFNativeParser: text too short or nil (\(raw?.count ?? 0) chars)")
             return nil
         }
-
+        let text = raw.replacingOccurrences(of: "\r\n", with: "\n")
+                        .replacingOccurrences(of: "\r", with: "\n")
+        let first200 = String(text.prefix(200))
+        print("[SomaAI] PDFNativeParser: text length=\(text.count) chars; first 200: \(first200)")
         let patient = parsePatient(text: text)
 
         var markers: [PDFMarker] = []
-        markers.append(contentsOf: parseTable(
-            in: text,
-            sectionHeader: "Физико-химические свойства"
-        ))
-        markers.append(contentsOf: parseTable(
-            in: text,
-            sectionHeader: "Микроскопическое исследование осадка"
-        ))
-
+        let m1 = parseTable(in: text, sectionHeader: "Физико-химические свойства")
+        print("[SomaAI] PDFNativeParser: Физико-химические = \(m1.count) markers")
+        markers.append(contentsOf: m1)
+        let m2 = parseTable(in: text, sectionHeader: "Микроскопическое исследование осадка")
+        print("[SomaAI] PDFNativeParser: Микроскопическое = \(m2.count) markers")
+        markers.append(contentsOf: m2)
+        print("[SomaAI] PDFNativeParser: total = \(markers.count) markers")
+        for (idx, m) in markers.prefix(3).enumerated() {
+            print("[SomaAI]   marker[\(idx)]: name='\(m.name)' value='\(m.value ?? "nil")' range='\(m.referenceRange ?? "nil")' unit='\(m.unit ?? "nil")'")
+        }
         return PDFParseResult(markers: markers, patient: patient)
     }
 
@@ -228,6 +235,7 @@ enum PDFNativeParser {
 
     private static func parseTable(in text: String, sectionHeader: String) -> [PDFMarker] {
         guard let headerRange = text.range(of: sectionHeader) else {
+            print("[SomaAI] parseTable[\(sectionHeader)]: section header not found")
             return []
         }
         // Stop at the next section header or footer.
@@ -235,19 +243,40 @@ enum PDFNativeParser {
 
         // Find the column header (Показатель/Результат/Норма/Единицы).
         let lines = after.split(separator: "\n", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+        print("[SomaAI] parseTable[\(sectionHeader)]: \(lines.count) lines after section header")
+        // Print first 10 lines so we can see the column header format
+        for (idx, l) in lines.prefix(10).enumerated() {
+            print("[SomaAI]   line[\(idx)]: \(l.isEmpty ? "<empty>" : "'" + l + "'")")
+        }
 
         var i = 0
         // Skip to the column header.
+        var foundHeader = false
         while i + 4 < lines.count {
             if lines[i] == "Показатель"
                 && lines[i + 1] == "Результат"
                 && lines[i + 2] == "Норма"
                 && (lines[i + 3] == "Комментарий" || lines[i + 3] == "Единицы")
                 && lines[i + 4] == "Единицы" {
+                foundHeader = true
                 break
             }
             i += 1
         }
+        if !foundHeader {
+            // FALLBACK: search for Показатель/Результат/Норма/Единицы on
+            // the SAME line separated by 2+ spaces. iOS PDFKit may emit
+            // a single-line column header.
+            for (idx, l) in lines.prefix(15).enumerated() {
+                if l.contains("Показатель") && l.contains("Результат") && l.contains("Норма") && l.contains("Единицы") {
+                    print("[SomaAI] parseTable[\(sectionHeader)]: INLINE column header at line \(idx)")
+                    i = idx + 1
+                    foundHeader = true
+                    break
+                }
+            }
+        }
+        print("[SomaAI] parseTable[\(sectionHeader)]: foundHeader=\(foundHeader) i=\(i)")
         guard i + 4 < lines.count else { return [] }
         i += 5  // skip the column header
 
