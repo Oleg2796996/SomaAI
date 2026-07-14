@@ -274,7 +274,13 @@ struct AddLabTestView: View {
         ocrQuality = result.quality
         print("[SomaAI] OCR \(source): \(result.text.count) chars, quality=\(result.quality.label), confidence=\(result.confidence)")
         print("[SomaAI] OCR preview: \(String(result.text.prefix(400)))")
-        if result.quality == .poor {
+        // Sprint 4.7ao-pdf: for PDF renders, .medium quality is acceptable
+        // (Vision on iOS 26.5 sim caps at ~56% confidence for Russian
+        // text in clean PDF renders — but the data is still valid).
+        // Only block on .poor, and only if it's NOT a PDF (photos
+        // genuinely need better quality).
+        let isPDF = source.hasPrefix("PDF")
+        if result.quality == .poor && !isPDF {
             apiError = "OCR quality is poor (confidence \(Int(result.confidence * 100))%). The extracted text may be incomplete. Try a clearer scan or higher-resolution image."
             showingErrorAlert = true
         }
