@@ -342,7 +342,12 @@ struct LocalExtractor {
         let now = Date()
         let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: now) ?? now
         let twoDaysAhead = calendar.date(byAdding: .day, value: 2, to: now) ?? now
-        func isRecent(_ ymd: (year: Int, month: Int, day: Int)) -> Bool {
+        // Sprint 4.7ao-pdf-5e-bis: accept the full allMatches tuple
+        // (year, month, day, position). We only use the date fields
+        // for the comparison; position is carried along for callers
+        // that need to know WHERE in the text the chosen date came
+        // from (for the diagnostic log).
+        func isRecent(_ ymd: (year: Int, month: Int, day: Int, position: Int)) -> Bool {
             var comps = DateComponents()
             comps.year = ymd.year; comps.month = ymd.month; comps.day = ymd.day
             guard let d = calendar.date(from: comps) else { return false }
@@ -355,7 +360,7 @@ struct LocalExtractor {
         // Strategy 3: If the FIRST date is recent but a later one is
         // not, pick the FIRST non-recent one.
         let nonRecent = allMatches.filter { !isRecent($0) }
-        let chosen: (year: Int, month: Int, day: Int)?
+        let chosen: (year: Int, month: Int, day: Int, position: Int)?
         if let firstNonRecent = nonRecent.first {
             chosen = firstNonRecent
         } else {
