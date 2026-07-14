@@ -7,43 +7,57 @@
 //   - markers=0, sections=11 ❌  (75s timeout hit before LLM call
 //     finished because 4 Vision OCR calls × ~20s = 80s > 75s)
 //
-// On WSL pymupdf on the бланк НКЦ2 моча PDF showed the
-// "Физико-химические свойства" and "Микроскопическое
-// исследование осадка" tables are PURE SELECTABLE TEXT (not
-// rasterised). All 25 markers live in pdf.string:
+// At 17:55 Oleg ran 4a2a615 (5d-eleventh-ter) and got:
+//   - Date 2025-11-07 from PDFKit string ✅
+//   - "[SomaAI] PDF native parse yielded < 5 markers or no parse"
+//   - Vision OCR fallback ran and gave 1020 chars / 0.59 conf
+//   - 75s timeout hit AGAIN
 //
-//   Цвет: соломенно-желтый, норма: соломенно-желтый
-//   Прозрачность: прозрачная, норма: прозрачная
-//   Относительная плотность: 1,027, норма: 1,008 - 1,025,
-//     units: г/мл, comment: повышено
-//   Реакция: 6, норма: 5 - 7,5
-//   Белок: 0, норма: 0 - 0,1, units: г/л
-//   ... (25 markers total)
+// ROOT CAUSE: My first PDFNativeParser.parseTable relied on a
+// 4-non-empty-lines-per-row layout. But the НКЦ2 PDF has
+// VARIABLE row layouts in pdf.string (from pymupdf's
+// get_text("text") on the same file, which is how iOS PDFKit
+// emits):
 //
-// For these PDFs Vision OCR is overhead we don't need. We parse
-// the native text directly, derive (name, value, unit,
-// referenceRange) tuples, and only fall back to Vision OCR if
-// the native parse yields < 5 markers (image-only PDF, or a
-// layout our regex doesn't understand).
+//   "     Цвет\nсоломенно -\nжелтый\nсоломенно -\nжелтый\n
+//    Прозрачность\nпрозрачная\nпрозрачная\n
+//    Относительная плотность\n1,027\n1,008 - 1,025\nг/мл\nповышено\n
+//    Реакция\n6\n5 - 7,5\n
+//    Белок\n0\n0 - 0,1\nг/л\n..."
 //
-// The 4-column table layout in the НКЦ2 PDF is:
+// "Цвет" has 4 non-empty lines (split value + split range).
+// "Прозрачность" has 2 non-empty lines (one value + one range).
+// "Относительная плотность" has 4 non-empty lines (value + range +
+//   unit + comment).
+// "Реакция" has 2 non-empty lines (value + range, no unit/comment).
+// "Белок" has 3 non-empty lines (value + range + unit).
 //
-//   <Marker name>   <Result>   <Normal>   <Comment>   <Units>
+// There is no fixed column count per row. We need a different
+// strategy.
 //
-// with columns separated by single newlines (PDFKit's default
-// .string output puts each visual line on its own line). We
-// parse the table by:
-//   1. Splitting on the two section headers ("Физико-химические
-//      свойства" and "Микроскопическое исследование осадка")
-//   2. Within each section, recognising the header row
-//      ("Показатель\nРезультат\nНорма\nКомментарий\nЕдиницы")
-//   3. Then every 5 consecutive non-empty lines after the
-//      header = one marker record.
+// NEW STRATEGY (5d-twelfth):
+//   1. Find the table by locating the column header
+//      ("Показатель" + "Результат" + "Норма" + "Единицы").
+//   2. For each marker name (a line with a Cyrillic/Russian
+//      string that's not a section header or footer), take
+//      everything until the NEXT marker name or section
+//      boundary, and parse that block.
 //
-// If parsing succeeds (>= 5 markers), we skip Vision OCR
-// entirely. This collapses 4 Vision calls (~80s) into 0 calls
-// (instant), avoiding the 75s processDocument timeout and
-// removing Vision OCR's `value: null` non-determinism.
+//   How do we recognise a "marker name" line? Heuristic:
+//   - A line is a marker name if it has NO leading numeric
+//     content (no digit-starting token) AND it's not in a
+//     known-stop list ("Стр. 1 из 2", "Анализы выполнены", etc.).
+//   - Values: pure digits, decimals, "не обнаружено",
+//     "отсутствуют", "отрицательно", "единичные", or ranges
+//     like "1,008 - 1,025".
+//   - Units: short strings containing "/", "мкл", "мг",
+//     "ммоль", "мкмоль", "ед." or "в поле зр"/"в препарате".
+//   - Comments: anything else that doesn't match.
+//
+//   We also extract: the patient block at the top
+//   (Ф.И.О., Дата рождения, № карты, Биоматериал, Врач, Лаб)
+//   and use a regex to capture the lab name from the first
+//   clinic header.
 
 import Foundation
 import PDFKit
@@ -68,24 +82,18 @@ enum PDFNativeParser {
         let doctorName: String?
     }
 
-    /// Top-level result. `markers.isEmpty` indicates the caller
-    /// should fall back to Vision OCR.
     struct PDFParseResult {
         let markers: [PDFMarker]
         let patient: PDFPatientInfo
     }
 
-    /// Parse the PDF and extract markers + patient info.
-    /// Returns nil if the PDF is too short to be a lab report.
     static func parse(pdf: PDFDocument) -> PDFParseResult? {
         guard let text = pdf.string, text.count > 200 else {
             return nil
         }
 
-        // Patient info (best-effort regex).
         let patient = parsePatient(text: text)
 
-        // Markers from the two known table sections.
         var markers: [PDFMarker] = []
         markers.append(contentsOf: parseTable(
             in: text,
@@ -106,7 +114,6 @@ enum PDFNativeParser {
             guard let range = text.range(of: pattern, options: .regularExpression) else {
                 return nil
             }
-            // Take the rest of the line after the matched label.
             let after = text[range.upperBound...]
             if let nl = after.firstIndex(of: "\n") {
                 let value = after[..<nl].trimmingCharacters(in: .whitespaces)
@@ -125,30 +132,112 @@ enum PDFNativeParser {
         )
     }
 
-    // MARK: - Tables
+    // MARK: - Tables (5d-twelfth strategy: variable row layout)
 
-    /// Parse a 5-column table (Показатель | Результат | Норма |
-    /// Комментарий | Единицы) starting at `sectionHeader`. Lines
-    /// are separated by `\n` in PDFKit's `.string` output.
+    /// Lines that mark a non-marker-name line (footers, headers, etc.)
+    private static let stopLines: Set<String> = [
+        "Стр. 1 из 2", "Стр. 2 из 2",
+        "Анализы выполнены на оборудовании",
+        "Результат лабораторного исследования не является диагнозом",
+        "Исследование выполнено из доставленного биоматериала",
+    ]
+
+    /// Is this line a known section header? We use it to break the
+    /// row-block parsing.
+    private static let sectionHeaders: Set<String> = [
+        "Физико-химические свойства",
+        "Микроскопическое исследование осадка",
+        "Показатель", "Результат", "Норма",
+        "Комментарий", "Единицы",
+    ]
+
+    /// Heuristic: is this line a marker NAME (Cyrillic title that
+    /// doesn't start with a digit, isn't a number, isn't a known
+    /// stop/header line)?
+    ///
+    /// CRITICAL: in pdf.string from iOS PDFKit, marker names are
+    /// followed by value lines. The value lines can be Cyrillic
+    /// ("соломенно", "желтый", "прозрачная", "единичные") or
+    /// numeric ("1,027", "0 - 0,1"). To avoid mis-classifying
+    /// values as marker names, we use a STRICT whitelist of
+    /// known marker names from НКЦ2 lab PDFs.
+    private static func isMarkerName(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return false }
+        // Reject known stop lines.
+        if stopLines.contains(t) { return false }
+        if sectionHeaders.contains(t) { return false }
+        // Reject pure numerics / ranges.
+        if t.allSatisfy({ "0123456789,.- \t".contains($0) }) { return false }
+        // Reject lines that start with a digit.
+        if t.first?.isNumber == true { return false }
+        // Reject value-shaped lines (numeric range, "не обнаружено",
+        // "отсутствуют", "отрицательно", "единичные", "небольшое",
+        // color words like "желтый", "прозрачная", "соломенно").
+        if isValue(t) { return false }
+        // Reject unit-shaped lines.
+        if isUnit(t) { return false }
+        // Reject short lines (< 3 chars) that are likely fragments.
+        guard t.count >= 3 else { return false }
+        // Reject lines that are pure lowercase Russian (likely
+        // comments / values, not marker names). Marker names
+        // typically start with a capital letter.
+        let firstChar = t.first!
+        if firstChar.isLowercase { return false }
+        return true
+    }
+
+    /// Is this line a unit? Matches: г/л, мг/л, ммоль/л, мкмоль/л,
+    /// МКЛ, мкл, ед., в поле зр, в препарате, в поле зрения.
+    private static func isUnit(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return false }
+        let unitKeywords = ["/", "мкл", "мг", "ммоль", "мкмоль", "ед.", "поле зр", "препар", "мл/мин"]
+        for kw in unitKeywords {
+            if t.lowercased().contains(kw.lowercased()) { return true }
+        }
+        return false
+    }
+
+    /// Is this line a value? Numeric, "не обнаружено",
+    /// "отсутствуют", "отрицательно", "единичные", "небольшое",
+    /// or range "1,008 - 1,025".
+    private static func isValue(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return false }
+        let valueKeywords = ["не обнаружено", "отсутствуют", "отсутствует",
+                             "отрицательно", "единичные", "небольшое",
+                             "большое", "умеренное", "много", "мало",
+                             "соломенно", "прозрачная", "мутная",
+                             "желтый", "желтая"]
+        for kw in valueKeywords {
+            if t.lowercased().contains(kw.lowercased()) { return true }
+        }
+        // Numeric / range.
+        if t.allSatisfy({ "0123456789,.- \t".contains($0) }) { return true }
+        if let first = t.first, first.isNumber { return true }
+        if t.contains(" - ") || t.contains("-") {
+            // "1,008 - 1,025" pattern
+            let parts = t.components(separatedBy: "-")
+            if parts.count >= 2, parts.allSatisfy({ $0.trimmingCharacters(in: .whitespaces).allSatisfy({ "0123456789,. ".contains($0) }) && !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func parseTable(in text: String, sectionHeader: String) -> [PDFMarker] {
         guard let headerRange = text.range(of: sectionHeader) else {
             return []
         }
+        // Stop at the next section header or footer.
         let after = text[headerRange.upperBound...]
 
-        // Find the column header row. The PDF puts it as
-        //   Показатель
-        //   Результат
-        //   Норма
-        //   Комментарий
-        //   Единицы
-        // (each label on its own line, in order). We anchor on
-        // "Показатель" + "Единицы" to confirm we're in the right
-        // table.
+        // Find the column header (Показатель/Результат/Норма/Единицы).
         let lines = after.split(separator: "\n", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+
         var i = 0
-        // Find the Показатель/Результат/Норма/Комментарий/Единицы
-        // header sequence.
+        // Skip to the column header.
         while i + 4 < lines.count {
             if lines[i] == "Показатель"
                 && lines[i + 1] == "Результат"
@@ -160,91 +249,113 @@ enum PDFNativeParser {
             i += 1
         }
         guard i + 4 < lines.count else { return [] }
-        i += 5  // skip the header
+        i += 5  // skip the column header
 
-        // Now read records: every 5 lines = (name, value, range,
-        // comment, unit). But multi-line values like "соломенно -
-        // желтый" (split across two PDF lines) break the simple
-        // 5-line grouping. We do best-effort: skip empty lines,
-        // take the first non-empty line as `name`, then the next
-        // non-empty lines as value/range/comment/unit, stopping
-        // when we hit a line that looks like the NEXT marker name
-        // (no unit hint, no numeric pattern, no Russian
-        // "не обнаружено"/"отсутствуют" pattern).
+        // Now walk through lines. A "marker name" line is the start
+        // of a row. The next 1-5 non-empty lines (until the next
+        // marker name or section boundary) are value/range/comment/
+        // unit.
         var markers: [PDFMarker] = []
         let total = lines.count
+
         while i < total {
             // Skip empty lines.
             while i < total, lines[i].isEmpty { i += 1 }
             guard i < total else { break }
 
-            let nameCandidate = lines[i]
-            // If the line looks like a section break or footer,
-            // stop.
-            if nameCandidate.contains("Стр. ") || nameCandidate.contains("Анализы выполнены") {
-                break
+            let name = lines[i]
+            // Stop at section boundary or footer.
+            if stopLines.contains(name) { break }
+            if sectionHeaders.contains(name) { break }
+
+            // If this is not a marker name, just skip it.
+            guard isMarkerName(name) else {
+                i += 1
+                continue
             }
 
-            // Read up to 6 following lines as the value/range/
-            // comment/unit tuple. Heuristic: take the first 4
-            // non-empty lines as the 4 columns.
-            var cols: [String] = []
+            // Read the next non-empty lines until we hit the next
+            // marker name or section boundary.
+            var rowLines: [String] = []
             var j = i + 1
-            while j < total && cols.count < 4 {
-                if !lines[j].isEmpty {
-                    cols.append(lines[j])
-                }
+            while j < total {
+                let l = lines[j]
+                if l.isEmpty { j += 1; continue }
+                if stopLines.contains(l) || sectionHeaders.contains(l) { break }
+                if isMarkerName(l) { break }
+                rowLines.append(l)
                 j += 1
+                // Don't collect forever — cap at 6 lines per row
+                // to avoid eating the next section.
+                if rowLines.count >= 6 { break }
             }
-            // Heuristic columns: [value, range, comment, unit] OR
-            // [value, range, unit] OR [value, range] depending on
-            // how the PDF laid out the row.
-            // НКЦ2 PDFs lay out as: value, range, comment, unit
-            // (4 lines). But some rows merge the comment into
-            // range or omit the unit. We assign heuristically.
-            let value = cols.indices.contains(0) ? cols[0] : nil
-            let referenceRange = cols.indices.contains(1) ? cols[1] : nil
-            // If we have 4 cols: [value, range, comment, unit]
-            // If 3 cols: [value, range, unit]
-            // If 2 cols: [value, range]
-            let comment: String?
-            let unit: String?
-            switch cols.count {
-            case 4:
-                comment = cols[2]
-                unit = cols[3]
-            case 3:
-                // НКЦ2 4-line rows sometimes drop the comment.
-                // The 3rd col is unit if it looks like a unit
-                // (contains "/", "мкл", "г/л", "мкмоль", "ммоль",
-                // "мг/", "ед." or is short and lowercase).
-                let looksLikeUnit = cols[2].contains("/")
-                    || cols[2].contains("мкл")
-                    || cols[2].contains("мг")
-                    || cols[2].contains("ммоль")
-                    || cols[2].contains("мкмоль")
-                    || cols[2].contains("в поле зр")
-                    || cols[2].contains("в преп")
-                    || cols[2] == "ед."
-                if looksLikeUnit {
-                    comment = nil
-                    unit = cols[2]
-                } else {
-                    comment = cols[2]
-                    unit = nil
+
+            // Classify the row lines: first non-empty is value,
+            // second is range, third is comment or unit (depending
+            // on shape), fourth is the remaining.
+            // Heuristic: if a line looks like a unit, it's the
+            // unit. If a line looks like a value AND has no digits,
+            // it's a value or range. If a line is long Russian
+            // text (>15 chars and not a unit), it's a comment.
+            var value: String? = nil
+            var range: String? = nil
+            var unit: String? = nil
+            var comment: String? = nil
+
+            // The first line in rowLines is almost always the value.
+            if !rowLines.isEmpty {
+                value = rowLines[0]
+            }
+            // The second is usually the range (it's a numeric or
+            // "не обнаружено").
+            if rowLines.count >= 2 {
+                range = rowLines[1]
+            }
+            // Lines 3+ — figure out which is unit and which is
+            // comment. Unit if matches isUnit; comment otherwise.
+            for k in 2..<rowLines.count {
+                let l = rowLines[k]
+                if isUnit(l) && unit == nil {
+                    unit = l
+                } else if comment == nil {
+                    // If the line contains a digit and looks like
+                    // an "X-Y" pattern, treat as range continuation.
+                    if l.contains("-") && l.allSatisfy({ "0123456789,-. ".contains($0) || $0.isLetter }) {
+                        if let r = range, r.contains("-") {
+                            // already have a range, treat as comment
+                            comment = l
+                        } else {
+                            range = l
+                        }
+                    } else {
+                        comment = l
+                    }
                 }
-            default:
-                comment = nil
-                unit = nil
             }
-            // Markers where value is "не обнаружено" / "отсутствуют"
-            // / "отрицательно" / "единичные" don't need a flag;
-            // pass through.
+
+            // If the marker name is purely "Цвет" or similar and
+            // the value/range got split (e.g. "соломенно -" /
+            // "желтый"), join them.
+            if let v = value, v.hasSuffix(" -") || v == "соломенно" {
+                if let next = rowLines.dropFirst().first {
+                    value = v + " " + next
+                    // shift: the next line is consumed.
+                    if rowLines.count >= 2 { range = rowLines.count >= 3 ? rowLines[2] : nil }
+                    if rowLines.count >= 4 { /* unit = rowLines[3] */ }
+                    if rowLines.count >= 5 { /* comment = rowLines[4] */ }
+                }
+            }
+            if let r = range, r.hasSuffix(" -") || r == "соломенно" {
+                if let next = rowLines.dropFirst().first {
+                    range = r + " " + next
+                }
+            }
+
             markers.append(PDFMarker(
-                name: nameCandidate,
+                name: name,
                 value: (value?.isEmpty == false) ? value : nil,
                 unit: (unit?.isEmpty == false) ? unit : nil,
-                referenceRange: (referenceRange?.isEmpty == false) ? referenceRange : nil,
+                referenceRange: (range?.isEmpty == false) ? range : nil,
                 comment: (comment?.isEmpty == false) ? comment : nil
             ))
             i = j
