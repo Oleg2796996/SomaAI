@@ -188,4 +188,55 @@ extension PDFPage {
         print("[SomaAI] PDF render halves (fallback): pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt scale=\(scale) -> header [0..\(Int(headerH))pt] + body [\(Int(headerH))..\(Int(pageRect.height))pt] via CGContext clip")
         return bands
     }
+
+    /// Sprint 4.7ao-pdf-5d-sixth: render JUST the top 15% of the page
+    /// at scale=4.0 (12x physical on Retina). Why a third pass?
+    ///
+    /// The 15:36 log (Oleg ran 4.7ao-pdf-5d-fifth with header 50% +
+    /// body 50%) shows that the 50% header band STILL doesn't
+    /// contain the patient block. The OCR text from that band
+    /// starts with "Неорганиз. осадок мочи (соли)" — body table
+    /// data, not patient name or sample date.
+    ///
+    /// The patient block (ФИО, лаборатория, дата забора "07.11.2025")
+    /// on НКЦ2 lab PDFs is in the very top of the page — clinic
+    /// name ~5%, patient block ~10-12%. The previous header
+    /// bands (25%, 35%, 50%) were all WIDE-AND-LOW res (scale=3.0
+    /// over half the page = 3790px tall for the date in 12% of
+    /// the page = 900px actual). The date in those renders is
+    /// 7-8pt font × 216 DPI = 17-19 pixels tall, which Vision
+    /// sometimes drops on the iOS 26.5 simulator.
+    ///
+    /// The 5d-sixth pass renders ONLY the top 15% (842pt * 0.15 =
+    /// 126pt = 504pt cropped) at scale=4.0 (12x physical), giving
+    /// 126pt * 4.0 * 3 (Retina) = 1512px tall and 595pt * 12 =
+    /// 7140px wide. Date text at 7-8pt × 4.0 × 3 = 84-96px tall —
+    /// comfortably readable by Vision.
+    ///
+    /// Cost: 1 extra Vision call per page. For a 2-page PDF this
+    /// is 2 extra calls (was 4, now 6). Pipeline fits inside 75s.
+    func renderAsImageTopStrip(stripRatio: CGFloat = 0.15, scale: CGFloat = 4.0) -> [UIImage] {
+        let pageRect = bounds(for: .mediaBox)
+        let pixelSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: pixelSize)
+        let image = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: pixelSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: pageRect.height)
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
+            // Clip to ONLY the top stripRatio of the page. The PDF
+            // page's coordinate system after the Y-flip above has
+            // y=0 at the bottom of the renderer canvas, so the
+            // top of the page sits at y=pageRect.height. We clip
+            // a strip from y=(pageRect.height * (1-stripRatio)) to
+            // y=pageRect.height (in flipped coords).
+            let clipTopY = pageRect.height * (1.0 - stripRatio)
+            ctx.cgContext.clip(to: CGRect(x: 0, y: clipTopY, width: pageRect.width, height: pageRect.height * stripRatio))
+            draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        print("[SomaAI] PDF render top-strip: pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt -> stripRatio=\(stripRatio) scale=\(scale) cgImage=\(image.cgImage.map { "\($0.width)x\($0.height)px" } ?? "nil")")
+        return [image]
+    }
 }

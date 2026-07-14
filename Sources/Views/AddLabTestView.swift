@@ -270,6 +270,21 @@ struct AddLabTestView: View {
             // processDocument budget (proven by 4.7ao-pdf-4's
             // 2-call baseline).
             if let page = pdf.page(at: i) {
+                // Sprint 4.7ao-pdf-5d-sixth: prepend a high-DPI
+                // render of JUST the top 15% of the page (where
+                // the patient name, lab name and sample date
+                // live — clinic name at ~5%, patient block at
+                // ~10-12% on НКЦ2 lab PDFs). At 4.0x scale this
+                // gives 7-8pt text at 84-96 actual pixels in the
+                // cropped image, which Vision OCR can read
+                // reliably (the halfs at 3.0x only gave 17-19
+                // pixels for the same text, which sometimes gets
+                // dropped on iOS 26.5 sim).
+                let topStrips = page.renderAsImageTopStrip(stripRatio: 0.15, scale: 4.0)
+                images.append(contentsOf: topStrips)
+                // Then the proven 50/50 halves from 4.7ao-pdf-5d-fifth
+                // — these carry the body table where the 24 markers
+                // live.
                 let bands = page.renderAsImageHalves()
                 images.append(contentsOf: bands)
             }
