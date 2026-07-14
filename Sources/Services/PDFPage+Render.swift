@@ -3,23 +3,33 @@ import PDFKit
 
 extension PDFPage {
     /// Render a PDF page to UIImage at the given scale.
-    /// - Scale 3.0 (final, 4.7ao-pdf-4): A4 = 1785x2526 px, comfortably
-    ///   under Vision's effective processing ceiling on iOS 26.5 sim
-    ///   (we now know the real limit is below 3369 — possibly around
-    ///   3000 — because 4.0 still clipped the top half of the page).
-    ///   3.0 gives ~0.31 confidence (4.7aj post-mortem) which is
-    ///   "medium" by Sprint 4.7am thresholds — enough to pass the
-    ///   quality gate and let regex/LLM extract the full table.
-    /// - 4.0 (4.7ao-pdf-3) was a step in the right direction but still
-    ///   over the limit; 2382x3369 produced 469 chars (only the bottom
-    ///   half of the page). 5.0 (4.7aj) clipped to ~362 chars (just
-    ///   the bottom 4 rows). 3.0 should return the full page text.
+    /// - Scale 2.5 (was 3.0 from 4.7ao-pdf-4 to 4.7ao-pdf-5b).
+    ///   The 3.0 scale was a footgun: UIGraphicsImageRenderer applies
+    ///   UIScreen.main.scale ON TOP of the requested scale, so on
+    ///   iPhone 6.5" Pro Retina sims (scale=3.0) we were producing
+    ///   9.0x renders (1786x2526 logical -> 5360x7581 actual pixels).
+    ///   Vision then clipped the top half of the page in EACH half,
+    ///   and the resulting 705 chars / conf 0.29 / 0 markers run was
+    ///   strictly worse than the un-split 1786x2526 output from
+    ///   4.7ao-pdf-4 (1500+ chars / conf 0.87 / 8+ markers).
+    /// - 2.5 with UIGraphicsImageRendererFormat.scale=1.0 gives
+    ///   pixel-accurate A4 = 1487x2102 px (under the 2526 long-side
+    ///   limit on iOS 26.5 sim) and uses 2.5x of the device's
+    ///   screen-aspect pixel resolution, which Vision handles well.
     /// - 1.0 reproduces the legacy `PDFPage.thumbnail(of:for:)` behaviour
     ///   but at unusable quality.
-    func renderAsImage(scale: CGFloat = 3.0) -> UIImage? {
+    func renderAsImage(scale: CGFloat = 2.5) -> UIImage? {
         let pageRect = bounds(for: .mediaBox)
         let pixelSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: pixelSize)
+        // Sprint 4.7ao-pdf-5c: pin UIGraphicsImageRenderer's internal
+        // scale to 1.0 so the resulting UIImage is exactly
+        // pixelSize in pixels. Without this, the renderer multiplies
+        // by UIScreen.main.scale (3.0 on iPhone 6.5" Pro sim) and we
+        // end up with 9x renders even when we asked for 3x.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: pixelSize, format: format)
         let image = renderer.image { ctx in
             UIColor.white.setFill()
             ctx.fill(CGRect(origin: .zero, size: pixelSize))
@@ -40,7 +50,7 @@ extension PDFPage {
         // person debugging Vision OCR regressions can see at a glance
         // whether Vision is being handed a 3000x4200 image (over the
         // ~4096 limit on iOS 26.5 sim) or a 2380x3368 one (safe).
-        print("[SomaAI] PDF render: pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt -> \(Int(pixelSize.width))x\(Int(pixelSize.height))px (scale=\(scale))")
+        print("[SomaAI] PDF render: pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt -> \(Int(image.size.width))x\(Int(image.size.height))pt (scale=\(scale), pixelSize=\(Int(pixelSize.width))x\(Int(pixelSize.height))px)")
         return image
     }
 
@@ -61,7 +71,7 @@ extension PDFPage {
     /// is 1785 x 1263 px, comfortably under the limit, AND the
     /// Vision call sees only the content of that half (no squishing,
     /// no flip, no nonsense).
-    func renderAsImageHalves(scale: CGFloat = 3.0) -> [UIImage] {
+    func renderAsImageHalves(scale: CGFloat = 2.5) -> [UIImage] {
         guard let fullImage = renderAsImage(scale: scale),
               let cgFull = fullImage.cgImage else {
             // Fallback: just return the full image as a single
