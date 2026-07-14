@@ -83,6 +83,16 @@ extension PDFPage {
     /// collection date at ~20-25%, lab technician signature
     /// at ~30%). 25% misses the date; 35% catches it.
     ///
+    /// Sprint 4.7ao-pdf-5d-fifth: 35% still missed it. The 15:26
+    /// build's OCR preview starts with "Неорганиз. осадок мочи
+    /// (соли)" — body table data, NOT the patient block. The date
+    /// must sit around 40-50% of the page, not 25-30%. Bumped
+    /// to 50% (header 5360x3790, body 5360x3790). 50/50 was
+    /// tested in 4.7ao-pdf-5a/5b but with the WRONG split method
+    /// (draw(with:to:) squished, CGImage.cropping hadn't been
+    /// tried at 50/50). With the proven CGImage.cropping path,
+    /// 50/50 should be safe.
+    ///
     /// CGImage.cropping is the Apple-blessed way to slice a rendered
     /// image. The crop rect's origin is top-left, Y growing down
     /// (UIKit convention — verified against Apple docs for
@@ -105,12 +115,18 @@ extension PDFPage {
         }
         let w = cgFull.width
         let h = cgFull.height
-        // Sprint 4.7ao-pdf-5d-ter: 35% header (was 25%). At
-        // 5360x7581 physical px this is 5360x2653 — enough to cover
-        // the patient name + lab name + sample collection date +
-        // the lab technician signature row that usually sits at
-        // ~30% on НКЦ2 lab PDFs.
-        let headerH = Int(Double(h) * 0.35)
+        // Sprint 4.7ao-pdf-5d-fifth: header 35% -> 50%. Oleg's
+        // 15:26 log (first successful build after 5e-bis fix) shows
+        // that the OCR text from the 35% header band starts with
+        // "Неорганиз. осадок мочи (соли)" — table data, NOT
+        // patient name / lab name / sample date. The header band
+        // on НКЦ2 lab PDFs is therefore MORE than 35% of the page
+        // — probably the date sits in the upper-middle (40-50%),
+        // not in the top quarter. Bump to 50% so we capture both
+        // the patient block AND the start of the table. The body
+        // band shrinks from 65% to 50% (≈3789px on 7581px page)
+        // — still plenty for the 24-marker table.
+        let headerH = Int(Double(h) * 0.50)
         let bodyH = h - headerH
         var bands: [UIImage] = []
         // Header band: top 35% of the page
@@ -123,7 +139,7 @@ extension PDFPage {
         if let body = cgFull.cropping(to: bodyRect) {
             bands.append(UIImage(cgImage: body, scale: 1.0, orientation: .up))
         }
-        print("[SomaAI] PDF render halves: fullImage=\(w)x\(h)px (scale=\(scale)) -> header \(w)x\(headerH)px (35%) + body \(w)x\(bodyH)px (65%) via CGImage.cropping")
+        print("[SomaAI] PDF render halves: fullImage=\(w)x\(h)px (scale=\(scale)) -> header \(w)x\(headerH)px (50%) + body \(w)x\(bodyH)px (50%) via CGImage.cropping")
         return bands
     }
 
