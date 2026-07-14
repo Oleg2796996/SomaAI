@@ -659,7 +659,7 @@ final class SomaAPIClient {
         // 4. Drop empty payloads
         let meds = (extraction.medications?.isEmpty == false) ? extraction.medications : nil
         let secs = (extraction.sections?.isEmpty == false) ? extraction.sections : nil
-        let marks = (deduped?.isEmpty == false) ? deduped : nil
+        var marks = (deduped?.isEmpty == false) ? deduped : nil
         // 5. Type override: smartClassify is the source of truth.
         //    LLM often confuses 'Эпикриз выписной' (dischargeSummary)
         //    with 'Эпикриз' (epicrisis) in the extract step, even when
@@ -670,6 +670,42 @@ final class SomaAPIClient {
         if extraction.type != finalType {
             print("[SomaAI] validate: LLM returned type='\(extraction.type)' but classify said '\(finalType)' — overriding")
         }
+
+        // 6. Sprint 4.7ao-pdf-5f: sections-as-markers fallback.
+        //    If the LLM responded with `sections` (because it picked
+        //    the unknown/clinical extractor instead of the lab
+        //    extractor) but the sections actually look like lab
+        //    markers (key = marker name, value = "X (норма: Y-Z)"
+        //    pattern), convert them into SomaMarker entries so the
+        //    user gets the data in the lab-marker UI instead of
+        //    the generic section list.
+        //
+        //    The 14:59 log showed exactly this failure: 11 lab
+        //    markers dumped as sections with keys like
+        //    "Клетки плоского эпителия" and values like
+        //    "единичные в препарате (норма: единичные в поле
+        //    зрения)". The user saw markers=0, sections=11 even
+        //    though the data was right there.
+        //
+        //    Conversion rules:
+        //      - value matches "<X> (норма: <Y>)" → split on the
+        //        "(норма: " boundary; X becomes the value, Y becomes
+        //        the referenceRange.
+        //      - value matches "<X> (norma: <Y>)" (Latin translit) —
+        //        also accept.
+        //      - if no "(норма:" match, store the entire value as
+        //        the marker value with nil referenceRange.
+        //      - computeFlag() is then used to derive the flag
+        //        from value vs referenceRange, exactly like the
+        //        manualMarkerExtraction path.
+        if marks == nil, let secs = secs, finalType == DocumentType.labResult.rawValue {
+            let converted = Self.sectionsAsMarkers(secs)
+            if !converted.isEmpty {
+                print("[SomaAI] validate: converted \(converted.count) sections-as-markers (LLM returned sections for a labResult)")
+                marks = converted
+            }
+        }
+
         return SomaExtractionResponse(
             type: finalType,
             date: extraction.date,
@@ -680,6 +716,67 @@ final class SomaAPIClient {
             medications: meds,
             sections: secs
         )
+    }
+
+    /// Sprint 4.7ao-pdf-5f: convert a `[SomaSection]` array into a
+    /// `[SomaMarker]` array when the LLM responded with sections
+    /// instead of markers (e.g. smartClassify flipped to unknown
+    /// and the generic extractor dumped the lab table as
+    /// key/value sections). Used by `validate()` for documents
+    /// where `expectedType == .labResult`.
+    static func sectionsAsMarkers(_ sections: [SomaSection]) -> [SomaMarker] {
+        // Patterns that identify a "value (норма: referenceRange)"
+        // structure inside the section value field.
+        let normaPatterns = [
+            #"\s*\(норма:\s*(.+?)\)\s*$"#,         // "(норма: 4,2-5,6)"
+            #"\s*\(норма\s*:\s*(.+?)\)\s*$"#,       // "норма :" (extra spaces)
+            #"\s*\(norma:\s*(.+?)\)\s*$"#,         // Latin transliteration
+        ]
+        var out: [SomaMarker] = []
+        for s in sections {
+            // Skip sections that are clearly metadata, not lab rows.
+            // Heuristic: skip if the key is one of the well-known
+            // clinical-section headings (they would be noise here).
+            let lowerKey = s.key.lowercased()
+            let skipKeys: Set<String> = [
+                "жалобы", "complaints", "анамнез", "anamnesis",
+                "диагноз", "diagnosis", "лечение", "treatment",
+                "рекомендации", "recommendations", "вывод", "conclusion",
+                "операция", "операции", "surgery", "operation",
+                "описание", "description", "заключение", "детали", "details",
+                "модальность (modality)", "область (body region)",
+                "куда (target)", "цель (reason)",
+                "необходимые обследования (required tests)"
+            ]
+            if skipKeys.contains(lowerKey) { continue }
+
+            // Try to extract "value (норма: refRange)" pattern.
+            var value = s.value
+            var reference: String? = nil
+            for pat in normaPatterns {
+                if let re = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) {
+                    let ns = s.value as NSString
+                    if let m = re.firstMatch(in: s.value, range: NSRange(location: 0, length: ns.length)) {
+                        let refCaptured = ns.substring(with: m.range(at: 1))
+                        let valueMatch = ns.substring(with: NSRange(location: 0, length: m.range.location))
+                        value = valueMatch.trimmingCharacters(in: .whitespaces)
+                        reference = refCaptured.trimmingCharacters(in: .whitespaces)
+                        break
+                    }
+                }
+            }
+            // If there's still a trailing ") (норма: ...)" we missed,
+            // strip it from value.
+            let flag = Self.computeFlag(value: value, reference: reference)
+            out.append(SomaMarker(
+                name: s.key,
+                value: value,
+                unit: nil,
+                referenceRange: reference,
+                flag: flag
+            ))
+        }
+        return out
     }
 
     // MARK: Shared low-level chat call
