@@ -59,9 +59,9 @@ extension PDFPage {
     /// Sprint 4.7ao-pdf-5b: render the full page once at scale 3.0, then
     /// Sprint 4.7ao-pdf-5d: render the full page once at scale 3.0
     /// (Retina-on, 5360x7581 physical px on iPhone 6.5" Pro sim) and
-    /// split the resulting CGImage into a HEADER band (top 25%) and
-    /// a BODY band (remaining 75%). The Vision call is then made
-    /// twice per page — once for each band.
+    /// split the resulting CGImage into a HEADER band and a BODY
+    /// band. The Vision call is then made twice per page — once for
+    /// each band.
     ///
     /// Why header+body and not 50/50? Because the failure mode of
     /// the unsplit run (4.7ao-pdf-4) was that the HEADER was
@@ -70,9 +70,18 @@ extension PDFPage {
     /// sample collection date). A 50/50 split (4.7ao-pdf-5a/5b) is
     /// too coarse — it wastes OCR budget on the middle of the page
     /// while still possibly clipping the date in the upper part of
-    /// the top half. A targeted 25% header crop guarantees the date
-    /// is in frame (and a 75% body crop is plenty for the marker
-    /// table).
+    /// the top half.
+    ///
+    /// Sprint 4.7ao-pdf-5d-ter: header 25% -> 35%. Oleg's 14:19 log
+    /// shows the OCR preview from a 4.7ao-pdf-5c-style build (he
+    /// hadn't rebuilt to 5d) — and even then the OCR text starts
+    /// with "Показатель Результат Норма", with NO patient name /
+    /// lab name / sample date ("07.11.2025") anywhere in the
+    /// output. That means on НКЦ2 lab PDFs the header band that
+    /// contains those fields is in roughly the top 30% of the page
+    /// (clinic name at ~5%, patient name at ~10-15%, sample
+    /// collection date at ~20-25%, lab technician signature
+    /// at ~30%). 25% misses the date; 35% catches it.
     ///
     /// CGImage.cropping is the Apple-blessed way to slice a rendered
     /// image. The crop rect's origin is top-left, Y growing down
@@ -86,23 +95,25 @@ extension PDFPage {
         }
         let w = cgFull.width
         let h = cgFull.height
-        // 25% header. At 5360x7581 physical pixels this is 5360x1895
-        // — wide enough to capture the full header line and the date
-        // in a single Vision frame.
-        let headerH = h / 4
+        // Sprint 4.7ao-pdf-5d-ter: 35% header (was 25%). At
+        // 5360x7581 physical px this is 5360x2653 — enough to cover
+        // the patient name + lab name + sample collection date +
+        // the lab technician signature row that usually sits at
+        // ~30% on НКЦ2 lab PDFs.
+        let headerH = Int(Double(h) * 0.35)
         let bodyH = h - headerH
         var bands: [UIImage] = []
-        // Header band: top 25% of the page
+        // Header band: top 35% of the page
         let headerRect = CGRect(x: 0, y: 0, width: w, height: headerH)
         if let header = cgFull.cropping(to: headerRect) {
             bands.append(UIImage(cgImage: header, scale: 1.0, orientation: .up))
         }
-        // Body band: bottom 75%
+        // Body band: bottom 65%
         let bodyRect = CGRect(x: 0, y: headerH, width: w, height: bodyH)
         if let body = cgFull.cropping(to: bodyRect) {
             bands.append(UIImage(cgImage: body, scale: 1.0, orientation: .up))
         }
-        print("[SomaAI] PDF render halves: fullImage=\(w)x\(h)px (scale=\(scale)) -> header \(w)x\(headerH)px + body \(w)x\(bodyH)px via CGImage.cropping")
+        print("[SomaAI] PDF render halves: fullImage=\(w)x\(h)px (scale=\(scale)) -> header \(w)x\(headerH)px (35%) + body \(w)x\(bodyH)px (65%) via CGImage.cropping")
         return bands
     }
 }
