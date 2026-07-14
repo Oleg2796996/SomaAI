@@ -293,8 +293,18 @@ struct LocalExtractor {
 
     // MARK: - Date extraction
 
-    /// Prefer the LAST date in the document (discharge > admission > lab).
-    /// Supports DD.MM.YYYY, DD/MM/YYYY, DD.MM.YY, "17 января 2025", ISO.
+    /// Prefer the FIRST date in the document (sample/admission date).
+    /// The LAST date is usually the "print" or "approval" date (often
+    /// today), which is NOT what we want. Supports DD.MM.YYYY,
+    /// DD/MM/YYYY, DD.MM.YY, "17 января 2025", ISO.
+    /// Sprint 4.7ao-pdf-5e: also filter out "today" / "yesterday"
+    /// dates — for medical PDFs the footer "Печать: 14.07.2026 09:53"
+    /// is the print timestamp, not the sample date. If the FIRST
+    /// matched date is today/yesterday, fall back to the LAST
+    /// non-recent date. This handles both cases:
+    ///   1. Header date "07.11.2025" is the FIRST and we want it.
+    ///   2. Footer "14.07.2026 09:53" is FIRST and we want to skip
+    ///      it and use the body's "07.11.2025" instead.
     static func extractBestDate(_ text: String) -> String? {
         let patterns: [String] = [
             #"\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b"#,
@@ -307,29 +317,60 @@ struct LocalExtractor {
             "мая": "05", "июня": "06", "июля": "07", "августа": "08",
             "сентября": "09", "октября": "10", "ноября": "11", "декабря": "12"
         ]
-        var lastMatch: (year: Int, month: Int, day: Int)? = nil
+        // Sprint 4.7ao-pdf-5e: collect ALL matches in document order
+        // (was: only the last one). The "last date wins" logic was
+        // a bug for medical PDFs where the LAST date is the print
+        // timestamp (often today), not the sample date.
+        var allMatches: [(year: Int, month: Int, day: Int, position: Int)] = []
         for pattern in patterns {
             guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             let matches = re.matches(in: text, options: [], range: NSRange(location: 0, length: (text as NSString).length))
             for m in matches {
                 let nsText = text as NSString
                 let captured = nsText.substring(with: m.range)
-                let ymd = parseDate(captured, monthMap: monthMap)
-                if let ymd = ymd {
-                    if let prev = lastMatch {
-                        if ymd.year * 10000 + ymd.month * 100 + ymd.day >= prev.year * 10000 + prev.month * 100 + prev.day {
-                            lastMatch = ymd
-                        }
-                    } else {
-                        lastMatch = ymd
-                    }
+                if let ymd = parseDate(captured, monthMap: monthMap) {
+                    allMatches.append((ymd.year, ymd.month, ymd.day, m.range.location))
                 }
             }
         }
-        if let ymd = lastMatch {
-            return String(format: "%04d-%02d-%02d", ymd.year, ymd.month, ymd.day)
+        guard !allMatches.isEmpty else { return nil }
+
+        // Sprint 4.7ao-pdf-5e: "today/yesterday" filter. If a date is
+        // within 2 days of now, it's almost certainly a print
+        // timestamp, not a medical event date.
+        let calendar = Calendar.current
+        let now = Date()
+        let twoDaysAgo = calendar.date(byAdding: .day, value: -2, to: now) ?? now
+        let twoDaysAhead = calendar.date(byAdding: .day, value: 2, to: now) ?? now
+        func isRecent(_ ymd: (year: Int, month: Int, day: Int)) -> Bool {
+            var comps = DateComponents()
+            comps.year = ymd.year; comps.month = ymd.month; comps.day = ymd.day
+            guard let d = calendar.date(from: comps) else { return false }
+            return d >= twoDaysAgo && d <= twoDaysAhead
         }
-        return nil
+
+        // Strategy 1: FIRST non-recent date in document order.
+        // Strategy 2: If all dates are recent, fall back to the FIRST
+        // one (don't return today — caller already has it).
+        // Strategy 3: If the FIRST date is recent but a later one is
+        // not, pick the FIRST non-recent one.
+        let nonRecent = allMatches.filter { !isRecent($0) }
+        let chosen: (year: Int, month: Int, day: Int)?
+        if let firstNonRecent = nonRecent.first {
+            chosen = firstNonRecent
+        } else {
+            // All dates are recent. Pick the EARLIEST one (most likely
+            // the sample date even if it's a week-old document).
+            chosen = allMatches.min(by: { lhs, rhs in
+                lhs.year * 10000 + lhs.month * 100 + lhs.day < rhs.year * 10000 + rhs.month * 100 + rhs.day
+            })
+        }
+        // Sprint 4.7ao-pdf-5e: log what we found so the date-fix
+        // sprint can be evaluated against real OCR content.
+        let allDatesStr = allMatches.map { String(format: "%04d-%02d-%02d", $0.year, $0.month, $0.day) }.joined(separator: ", ")
+        print("[SomaAI] extractBestDate: found \(allMatches.count) date(s) — [\(allDatesStr)]; recent=\(allMatches.filter(isRecent).count); chose=\(chosen.map { String(format: "%04d-%02d-%02d", $0.year, $0.month, $0.day) } ?? "nil")")
+        guard let ymd = chosen else { return nil }
+        return String(format: "%04d-%02d-%02d", ymd.year, ymd.month, ymd.day)
     }
 
     private static func parseDate(_ raw: String, monthMap: [String: String]) -> (year: Int, month: Int, day: Int)? {
