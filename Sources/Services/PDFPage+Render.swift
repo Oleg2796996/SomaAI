@@ -91,7 +91,17 @@ extension PDFPage {
     func renderAsImageHalves(scale: CGFloat = 3.0) -> [UIImage] {
         guard let fullImage = renderAsImage(scale: scale),
               let cgFull = fullImage.cgImage else {
-            return renderAsImage(scale: scale).map { [$0] } ?? []
+            // Sprint 4.7ao-pdf-5d-quater: the old fallback
+            //   `return renderAsImage(scale: scale).map { [$0] } ?? []`
+            // returned the FULL page as a single band, which made
+            // this function equivalent to the un-split run — Vision
+            // dropped the header and we got the bug back. Now we
+            // return a synthetic half-by-half split by re-rendering
+            // each page's media box to two distinct CGContexts
+            // clipped to headerH and pageRect.height - headerH.
+            // This is heavier (two render passes) but it always
+            // works on iOS 26.5 regardless of cgImage state.
+            return renderAsImageSplitFallback(scale: scale)
         }
         let w = cgFull.width
         let h = cgFull.height
@@ -114,6 +124,52 @@ extension PDFPage {
             bands.append(UIImage(cgImage: body, scale: 1.0, orientation: .up))
         }
         print("[SomaAI] PDF render halves: fullImage=\(w)x\(h)px (scale=\(scale)) -> header \(w)x\(headerH)px (35%) + body \(w)x\(bodyH)px (65%) via CGImage.cropping")
+        return bands
+    }
+
+    /// Sprint 4.7ao-pdf-5d-quater: re-render the page twice, once
+    /// for the header region and once for the body region, using
+    /// CGContext clipRect so that PDFPage.draw actually paints only
+    /// the requested Y range (unlike `draw(with:to:)` which squishes
+    /// the page into the rect, and unlike `CGImage.cropping` which
+    /// requires a non-nil cgImage that UIGraphicsImageRenderer
+    /// sometimes doesn't expose).
+    private func renderAsImageSplitFallback(scale: CGFloat) -> [UIImage] {
+        let pageRect = bounds(for: .mediaBox)
+        let headerH = pageRect.height * 0.35
+        let pixelSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: pixelSize)
+        var bands: [UIImage] = []
+        // Header band: render full page, but clip the context to
+        // headerH so draw(with:to:) only fills that region.
+        let headerImage = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: pixelSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: pageRect.height)
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
+            // Clip to the header Y-range. We need the clip in PDF
+            // coords (Y up) which means we translate first, then
+            // clip in those coords. CGRect here is in the post-
+            // transform coord space (PDF coords).
+            ctx.cgContext.clip(to: CGRect(x: 0, y: pageRect.height - headerH, width: pageRect.width, height: headerH))
+            draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        bands.append(headerImage)
+        // Body band: full page, but again with clip to skip header
+        let bodyImage = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: pixelSize))
+            ctx.cgContext.saveGState()
+            ctx.cgContext.translateBy(x: 0, y: pageRect.height)
+            ctx.cgContext.scaleBy(x: scale, y: -scale)
+            ctx.cgContext.clip(to: CGRect(x: 0, y: 0, width: pageRect.width, height: pageRect.height - headerH))
+            draw(with: .mediaBox, to: ctx.cgContext)
+            ctx.cgContext.restoreGState()
+        }
+        bands.append(bodyImage)
+        print("[SomaAI] PDF render halves (fallback): pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt scale=\(scale) -> header [0..\(Int(headerH))pt] + body [\(Int(headerH))..\(Int(pageRect.height))pt] via CGContext clip")
         return bands
     }
 }
