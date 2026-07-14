@@ -23,6 +23,16 @@ struct AddLabTestView: View {
     // selection is just a default — it's NOT the actual sample date
     // until they tap Process.
     @State private var dateIsFromExtraction: Bool = false
+    // Sprint 4.7ao-pdf-5d-tenth: date extracted DIRECTLY from the
+    // PDF's native text (via PDFKit.PDFDocument.string) without
+    // Vision OCR. The 16:41 pymupdf analysis of the бланк НКЦ2
+    // моча PDF showed the date '07.11.2025 10:59' lives in real
+    // selectable text at Y=15.7% — not an image. PDFKit exposes
+    // this via `.string` and extractBestDate's Strategy 0
+    // ("доставка биоматериала" added in 5e-quarter) finds it.
+    // If non-nil, we override any OCR-derived date in
+    // processAndVerify.
+    @State private var pdfNativeDate: String?
 
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var isImportingPDF = false
@@ -250,11 +260,54 @@ struct AddLabTestView: View {
         let didStart = url.startAccessingSecurityScopedResource()
         defer { if didStart { url.stopAccessingSecurityScopedResource() } }
         print("[SomaAI] handlePDFSelection url=\(url.lastPathComponent) pathExt=\(url.pathExtension) scope=\(didStart)")
+        // Sprint 4.7ao-pdf-5d-tenth: extract the PDF's text content
+        // DIRECTLY via PDFKit (bypassing Vision OCR). The 16:41
+        // log of the бланк НКЦ2 моча PDF coordinates (via
+        // pymupdf on WSL) showed:
+        //   Y=2.0%  "Научно-клинический центр №2"
+        //   Y=3.4%  "ФГБНУ «РНЦХ им. акад. Б.В. Петровского»"
+        //   Y=4.7%  "Клинико-диагностическая лаборатория"
+        //   Y=6.6%  "г. Москва, Литовский б-р..."
+        //   Y=10.2% "Ф.И.О.: КОНОВАЛОВ ОЛЕГ АЛЕКСАНДРОВИЧ"
+        //   Y=11.6% "Дата рождения: 17.01.1981 (44 г.)   Пол: М"
+        //   Y=13.0% "№ карты: 21847522"
+        //   Y=14.3% "Биоматериал: Моча (разовая);"
+        //   Y=15.7% "Доставка биоматериала: 07.11.2025 10:59"   <-- date here
+        //   Y=20.1% "Физико-химические свойства"                 <-- table starts
+        // Font is 9.9pt (not 7-8pt as we assumed). Top-strip
+        // stripRatio 0.20 caught the body table header but
+        // missed the date (Vision dropped the small 9.9pt text
+        // at 15.7%). With 2 Vision calls, we either get the
+        // table OR the patient block — never both reliably.
+        //
+        // The fix: USE THE PDF'S NATIVE TEXT (selectable, not
+        // raster) for the date. pymupdf on WSL extracted
+        // "07.11.2025 10:59" perfectly via get_text("dict") —
+        // the text is real, not an image. PDFKit's PDFDocument
+        // exposes the same text via `.string` and per-page
+        // `.string`. extractBestDate has Strategy 0 (keyword
+        // proximity, "доставка биоматериала" added in 5e-quarter)
+        // which will pick "2025-11-07" from this clean text.
+        //
+        // Vision OCR is still used for MARKERS (the table body)
+        // — PDFKit string includes numbers, but not always the
+        // lab's exact formatting ("не обнаружено" vs "0", etc.).
+        // Vision remains the source of truth for markers; native
+        // PDF text is the source of truth for date/ФИО/лаб.
         guard let pdf = PDFDocument(url: url) else {
             print("[SomaAI] PDF Error: PDFDocument(url:) returned nil for \(url.lastPathComponent)")
             apiError = "Could not open PDF. The file may be encrypted, corrupted, or in an unsupported format."
             showingErrorAlert = true
             return
+        }
+        // 5d-tenth (continued): pdf is now valid, extract native text.
+        let pdfNativeText = pdf.string ?? ""
+        print("[SomaAI] PDF native text: \(pdfNativeText.count) chars (no Vision OCR)")
+        if let pdfDate = LocalExtractor.extractBestDate(pdfNativeText), !pdfDate.isEmpty {
+            print("[SomaAI] PDF native date extracted: \(pdfDate) (overrides OCR-based date)")
+            self.pdfNativeDate = pdfDate
+        } else {
+            self.pdfNativeDate = nil
         }
         var images: [UIImage] = []
         for i in 0..<pdf.pageCount {
@@ -390,6 +443,18 @@ struct AddLabTestView: View {
             }
 
             do {
+                // Sprint 4.7ao-pdf-5d-tenth: if PDFKit native text
+                // extraction gave us a date, USE IT. This bypasses
+                // both the LLM (which often returns today) and the
+                // OCR-text scan (which can't see the patient block
+                // at Y=15.7%). The native text is REAL — not an
+                // image — so the date is unambiguous.
+                var dateFromExtraction = false
+                if let pdfDate = pdfNativeDate, let parsed = Self.parseExtractionDate(pdfDate) {
+                    date = parsed
+                    dateFromExtraction = true
+                    print("[SomaAI] document date set from PDF NATIVE text: \(parsed) (overriding OCR/LLM)")
+                }
                 // 3-step pipeline: classify -> extract -> validate
                 let extraction = try await SomaAPIClient.shared.processDocument(ocr)
                 pendingExtraction = extraction
@@ -407,39 +472,35 @@ struct AddLabTestView: View {
                    let org = extraction.organization, !org.isEmpty {
                     provider = org
                 }
-                // Sprint 4.9b: auto-fill date from LLM extraction if available
-                // (extraction.date is ISO "YYYY-MM-DD" from LLM, or "DD.MM.YYYY"
-                // from LocalExtractor). Falls back to today if not parseable.
-                // Sprint 4.7al: LLM often returns today's date when it cannot
-                // find a date in the document. We treat today's date as
-                // "no useful date" and fall back to LocalExtractor's regex
-                // scan over the OCR text.
-                var dateFromExtraction = false
-                if let dateString = extraction.date, !dateString.isEmpty,
-                   let parsed = Self.parseExtractionDate(dateString) {
-                    // Reject "today" answers: if LLM's date is within 1 day of
-                    // now, assume it was a guess and look in the OCR text.
-                    let calendar = Calendar.current
-                    let isToday = calendar.isDateInToday(parsed)
-                    if !isToday {
-                        date = parsed
-                        dateFromExtraction = true
-                        print("[SomaAI] document date set from extraction: \(parsed) (was \(date))")
-                    } else {
-                        print("[SomaAI] LLM returned today's date (\(parsed)) — treating as 'not found'")
-                    }
-                }
+                // Sprint 4.7ao-pdf-5d-tenth: skip LLM date extraction
+                // if PDF native text already gave us a reliable date.
                 if !dateFromExtraction {
-                    // Fallback: scan the OCR text for any DD.MM.YYYY-style
-                    // date. LocalExtractor.extractBestDate uses Russian
-                    // month names + numeric formats.
-                    if let found = LocalExtractor.extractBestDate(ocr),
-                       let parsed = Self.parseExtractionDate(found) {
-                        date = parsed
-                        dateFromExtraction = true
-                        print("[SomaAI] document date set from OCR-text scan: \(parsed) (found='\(found)')")
-                    } else {
-                        print("[SomaAI] document date left as today: \(date)")
+                    if let dateString = extraction.date, !dateString.isEmpty,
+                       let parsed = Self.parseExtractionDate(dateString) {
+                        // Reject "today" answers: if LLM's date is within 1 day of
+                        // now, assume it was a guess and look in the OCR text.
+                        let calendar = Calendar.current
+                        let isToday = calendar.isDateInToday(parsed)
+                        if !isToday {
+                            date = parsed
+                            dateFromExtraction = true
+                            print("[SomaAI] document date set from extraction: \(parsed) (was \(date))")
+                        } else {
+                            print("[SomaAI] LLM returned today's date (\(parsed)) — treating as 'not found'")
+                        }
+                    }
+                    if !dateFromExtraction {
+                        // Fallback: scan the OCR text for any DD.MM.YYYY-style
+                        // date. LocalExtractor.extractBestDate uses Russian
+                        // month names + numeric formats.
+                        if let found = LocalExtractor.extractBestDate(ocr),
+                           let parsed = Self.parseExtractionDate(found) {
+                            date = parsed
+                            dateFromExtraction = true
+                            print("[SomaAI] document date set from OCR-text scan: \(parsed) (found='\(found)')")
+                        } else {
+                            print("[SomaAI] document date left as today: \(date)")
+                        }
                     }
                 }
                 // Sprint 4.7ao-pdf-5g: bubble the dateIsFromExtraction
