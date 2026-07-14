@@ -339,10 +339,7 @@ struct AddLabTestView: View {
             // the user hasn't typed anything yet.
             if testName.trimmingCharacters(in: .whitespaces).isEmpty,
                let name = parsed.patient.fullName, !name.isEmpty {
-                testName = "Анализ от " + (LocalExtractor.extractBestDate(pdfNativeText).flatMap(Self.formatDate(_:)) ?? "")
-                if testName.isEmpty || testName == "Анализ от " {
-                    testName = "Анализ — \(name)"
-                }
+                testName = "Анализ от \(name)"
                 print("[SomaAI] PDF native testName: \(testName)")
             }
             if provider.trimmingCharacters(in: .whitespaces).isEmpty,
@@ -524,7 +521,7 @@ struct AddLabTestView: View {
                         value: m.value ?? "—",
                         unit: m.unit,
                         referenceRange: m.referenceRange,
-                        flag: computeFlag(name: m.name, value: m.value, range: m.referenceRange)
+                        flag: SomaAPIClient.computeFlag(value: m.value ?? "—", reference: m.referenceRange)
                     )
                 }
                 pendingMedications = []
