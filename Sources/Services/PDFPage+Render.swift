@@ -3,19 +3,20 @@ import PDFKit
 
 extension PDFPage {
     /// Render a PDF page to UIImage at the given scale.
-    /// - Scale 4.0 (was 5.0 until 4.7ao-pdf-3): 5.0 produced 2975x4210
-    ///   px on A4, exceeding Vision's internal processing limit
-    ///   (~4096 on the long side on iOS 26.5 sim). The page was
-    ///   clipped and only the BOTTOM rows survived OCR (the ones with
-    ///   larger fonts: parameter names, equipment line, page footer).
-    ///   4.0 produces 2380x3368 px — fits the limit and still gives
-    ///   Vision plenty of resolution for body text. 3.0 (4.7aj) was
-    ///   abandoned for low confidence but on a fresh iOS 26.5 sim
-    ///   with the no-language-correction path, 4.0 lands in the
-    ///   0.6-0.8 confidence band.
+    /// - Scale 3.0 (final, 4.7ao-pdf-4): A4 = 1785x2526 px, comfortably
+    ///   under Vision's effective processing ceiling on iOS 26.5 sim
+    ///   (we now know the real limit is below 3369 — possibly around
+    ///   3000 — because 4.0 still clipped the top half of the page).
+    ///   3.0 gives ~0.31 confidence (4.7aj post-mortem) which is
+    ///   "medium" by Sprint 4.7am thresholds — enough to pass the
+    ///   quality gate and let regex/LLM extract the full table.
+    /// - 4.0 (4.7ao-pdf-3) was a step in the right direction but still
+    ///   over the limit; 2382x3369 produced 469 chars (only the bottom
+    ///   half of the page). 5.0 (4.7aj) clipped to ~362 chars (just
+    ///   the bottom 4 rows). 3.0 should return the full page text.
     /// - 1.0 reproduces the legacy `PDFPage.thumbnail(of:for:)` behaviour
     ///   but at unusable quality.
-    func renderAsImage(scale: CGFloat = 4.0) -> UIImage? {
+    func renderAsImage(scale: CGFloat = 3.0) -> UIImage? {
         let pageRect = bounds(for: .mediaBox)
         let pixelSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
         let renderer = UIGraphicsImageRenderer(size: pixelSize)
