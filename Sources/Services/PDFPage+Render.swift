@@ -215,28 +215,46 @@ extension PDFPage {
     ///
     /// Cost: 1 extra Vision call per page. For a 2-page PDF this
     /// is 2 extra calls (was 4, now 6). Pipeline fits inside 75s.
+    ///
+    /// Sprint 4.7ao-pdf-5d-sixth-bis: switched from CGContext.clip
+    /// to CGImage.cropping. The 5d-sixth attempt used
+    /// UIGraphicsImageRenderer's CGContext.clip(to:) — but
+    /// UIGraphicsImageRenderer always produces a full-canvas
+    /// UIImage regardless of clip. Oleg's 15:55 log showed
+    /// `cgImage=7146x10107px` (the FULL page) instead of the
+    /// expected 7146x1512px cropped strip. Vision's effective
+    /// ceiling on iOS 26.5 is ~5000-7000px on the long side —
+    /// 10107px is OVER the ceiling, so Vision OCR returned empty
+    /// text. CGImage.cropping(to:) is the proven path (used by
+    /// 5d/5d-ter/5d-fifth) and gives a properly-sized UIImage.
     func renderAsImageTopStrip(stripRatio: CGFloat = 0.15, scale: CGFloat = 4.0) -> [UIImage] {
-        let pageRect = bounds(for: .mediaBox)
-        let pixelSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: pixelSize)
-        let image = renderer.image { ctx in
-            UIColor.white.setFill()
-            ctx.fill(CGRect(origin: .zero, size: pixelSize))
-            ctx.cgContext.saveGState()
-            ctx.cgContext.translateBy(x: 0, y: pageRect.height)
-            ctx.cgContext.scaleBy(x: scale, y: -scale)
-            // Clip to ONLY the top stripRatio of the page. The PDF
-            // page's coordinate system after the Y-flip above has
-            // y=0 at the bottom of the renderer canvas, so the
-            // top of the page sits at y=pageRect.height. We clip
-            // a strip from y=(pageRect.height * (1-stripRatio)) to
-            // y=pageRect.height (in flipped coords).
-            let clipTopY = pageRect.height * (1.0 - stripRatio)
-            ctx.cgContext.clip(to: CGRect(x: 0, y: clipTopY, width: pageRect.width, height: pageRect.height * stripRatio))
-            draw(with: .mediaBox, to: ctx.cgContext)
-            ctx.cgContext.restoreGState()
+        // Sprint 4.7ao-pdf-5d-sixth-bis: delegate to renderAsImage
+        // at the requested scale, then CGImage.cropping the top
+        // stripRatio. This matches the proven halves path.
+        guard let fullImage = renderAsImage(scale: scale),
+              let cgFull = fullImage.cgImage else {
+            // If full render or cropping failed (iOS 26.5 sim
+            // sometimes returns nil cgImage for big renders), skip
+            // the top-strip pass and return an empty array so
+            // handlePDFSelection doesn't get a bad image. The
+            // halves pass still runs.
+            print("[SomaAI] PDF render top-strip: FAILED (no cgImage), skipping")
+            return []
         }
-        print("[SomaAI] PDF render top-strip: pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt -> stripRatio=\(stripRatio) scale=\(scale) cgImage=\(image.cgImage.map { "\($0.width)x\($0.height)px" } ?? "nil")")
-        return [image]
+        let w = cgFull.width
+        let h = cgFull.height
+        let stripH = Int(Double(h) * stripRatio)
+        // CGImage.cropping(to:) uses top-left origin with Y growing
+        // down (UIKit convention). Top of the page = y=0. The PDF
+        // renderAsImage already returned the page with text
+        // right-side up (Y-flipped), so y=0 IS the top.
+        let topRect = CGRect(x: 0, y: 0, width: w, height: stripH)
+        guard let cgTop = cgFull.cropping(to: topRect) else {
+            print("[SomaAI] PDF render top-strip: cropping failed for \(w)x\(stripH)px, skipping")
+            return []
+        }
+        let topImage = UIImage(cgImage: cgTop, scale: 1.0, orientation: .up)
+        print("[SomaAI] PDF render top-strip: pageRect=\(Int(w))x\(Int(h))px (scale=\(scale)) -> top strip \(cgTop.width)x\(cgTop.height)px (stripRatio=\(stripRatio)) via CGImage.cropping")
+        return [topImage]
     }
 }
