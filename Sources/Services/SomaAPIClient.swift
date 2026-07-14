@@ -714,7 +714,17 @@ final class SomaAPIClient {
         // and stop wrapping their answers in ```json ... ``` blocks.
         // Verified 2026-07-09: cuts the JSON-repair code path in half and
         // matches the schema without leading/trailing fences.
-        // Sprint 4.7u: max_tokens=6000 (was 4000) — code/medium still truncating at 2146 chars (mid-marker-list). 6000 fits full 23-marker panel + headers + flags easily.
+        // Sprint 4.7u: max_tokens=8000 (was 6000 in 4.7ao-pdf-5d) — with
+        // the header+body split the extract step now sees 2000+ chars of
+        // OCR text and needs to emit JSON for 11+ markers with non-trivial
+        // `unit` and `referenceRange` fields (e.g. "в поле зр." /
+        // "0,00 - 3,00"). At 6000 the model was cutting off mid-marker
+        // (we saw
+        //   {"name":"Слизь","value":"небольшое кол-во","unit
+        // — no closing : or value, decode failed, regex-fallback recovered
+        // 11 markers). 8000 gives enough headroom for a full 15-marker
+        // panel. Bump was 4000 -> 6000 in 4.7u (2026-07-09) when 6000
+        // first looked sufficient.
         // (15 markers × ~120 chars/row = ~1.8KB JSON), and 30s timeout for
         // reasoning models like code/high (minimax-m3) which can take 5-15s
         // on the first call from iOS URLSession.
@@ -722,7 +732,7 @@ final class SomaAPIClient {
             "model": chosenModel,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 6000,
+            "max_tokens": 8000,
             "response_format": ["type": "json_object"]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -1172,22 +1182,36 @@ extension SomaAPIClient {
         return out
     }
 
-    /// Sprint 4.7u: if the LLM response was truncated mid-marker (hit the
-    /// `max_tokens` cap before closing the array), try to close it manually.
-    /// We walk back from the end, find the last complete `},{` or `}]` and
-    /// append `]}` to close both array and root object.
+    /// Sprint 4.7u / 4.7ao-pdf-5d-bis: if the LLM response was truncated
+    /// mid-marker (hit the `max_tokens` cap before closing the array),
+    /// try to close it manually. The truncated text looks like
+    ///     {"markers":[{"name":"X","value":"1"},{"name":"Y","valu
+    /// (cut mid-key).
+    ///
+    /// Sprint 4.7u original: walk back 1..20 chars, append `}]}`,
+    /// decode. This works for clean cuts inside the LAST object but
+    /// not for cuts deeper than 20 chars.
+    ///
+    /// Sprint 4.7ao-pdf-5d-bis: extend the walk-back to 200 chars
+    /// (enough to skip past a couple of complete marker objects and
+    /// the separator `,` after the truncation point). The 4.7ao-pdf-5d
+    /// header+body split produced 2000+ chars of OCR text and the LLM
+    /// at max_tokens=6000 was cutting off mid-marker at depth ~50
+    /// chars (we saw
+    ///   {"name":"Слизь","value":"небольшое кол-во","unit
+    /// — 50 chars from the end). 200-char walk-back covers that and
+    /// gives us the SAME decode success rate as 4.7u had on the
+    /// shorter documents.
     static func tryHealTruncatedJSON(_ content: String, type: DocumentType) -> SomaExtractionResponse? {
         // Find the start of the JSON (first `{`).
         guard let firstBrace = content.firstIndex(of: "{") else { return nil }
-        // Sprint 4.7w: truncated JSON looks like
-        //   {"markers": [{"name":"X", "value":"1"}, {"name":"Y", "valu
-        // (cut mid-key). The simplest fix: walk back to the last `,` or `}` and
-        // close the array + root object. Then decode.
         let prefix = String(content[firstBrace...])
-        // Try progressively shorter substrings: each one ends at the last `,`
-        // or `}` (or other JSON-safe boundary), then we append `]}`.
-        // Heuristic: keep removing the last 1..20 chars until decode succeeds.
-        for drop in 0..<20 {
+        // Sprint 4.7ao-pdf-5d-bis: bumped 20 -> 200 to handle deeper
+        // cuts. The original 20 was enough for 4.7u's pre-4.7ao-pdf-5d
+        // inputs (~1500 chars / 11 markers) but the 4.7ao-pdf-5d
+        // header+body OCR (~2000 chars) is hitting the max_tokens=6000
+        // cap deeper into the response.
+        for drop in 0..<200 {
             let endIdx = prefix.endIndex
             let cutIdx = prefix.index(endIdx, offsetBy: -drop, limitedBy: prefix.startIndex) ?? prefix.startIndex
             let truncated = String(prefix[..<cutIdx])
