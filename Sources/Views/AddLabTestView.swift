@@ -235,18 +235,20 @@ struct AddLabTestView: View {
         }
         var images: [UIImage] = []
         for i in 0..<pdf.pageCount {
-            // Sprint 4.7ao-pdf-5c: render each page ONCE at scale 2.5
-            // (with UIGraphicsImageRendererFormat.scale=1.0 to bypass
-            // the Retina multiplier). A4 = 1487x2102 px, comfortably
-            // under Vision's effective processing ceiling on iOS 26.5
-            // sim. The earlier split (4.7ao-pdf-5a/5b) was needed
-            // because scale 3.0 with Retina produced 5360x7581 px
-            // images, which Vision clipped hard. With format.scale=1.0
-            // we get the true 1487x2102 px image, and Vision can see
-            // the whole page including the header (date/patient) and
-            // the full table — no need to split.
-            if let page = pdf.page(at: i), let img = page.renderAsImage() {
-                images.append(img)
+            // Sprint 4.7ao-pdf-5d: render each page as a HEADER band
+            // (top 25%) + a BODY band (bottom 75%) via
+            // CGImage.cropping(to:). The header is what carries the
+            // patient name, lab name, sample date — Vision was
+            // dropping this band on every prior un-split run.
+            // The body is the marker table, which we know works at
+            // full Retina 9x scale.
+            // For a 2-page PDF this gives 4 Vision calls; the
+            // pipeline is fast enough to fit inside the 75s
+            // processDocument budget (proven by 4.7ao-pdf-4's
+            // 2-call baseline).
+            if let page = pdf.page(at: i) {
+                let bands = page.renderAsImageHalves()
+                images.append(contentsOf: bands)
             }
         }
         guard !images.isEmpty else {
