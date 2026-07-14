@@ -235,8 +235,17 @@ struct AddLabTestView: View {
         }
         var images: [UIImage] = []
         for i in 0..<pdf.pageCount {
-            if let page = pdf.page(at: i), let img = page.renderAsImage() {
-                images.append(img)
+            // Sprint 4.7ao-pdf-5a: render each page as two halves (top +
+            // bottom) so Vision can see the full page. At scale 3.0
+            // (which is the largest safe scale) the full A4 still hit
+            // an effective Vision ceiling that dropped the top header
+            // band — exactly where the document date and patient name
+            // live. Splitting guarantees each half is well under the
+            // limit. For a 2-page PDF this means 4 Vision calls
+            // instead of 2; cheap on iOS 26.5 sim.
+            if let page = pdf.page(at: i) {
+                let halves = page.renderAsImageHalves()
+                images.append(contentsOf: halves)
             }
         }
         guard !images.isEmpty else {
