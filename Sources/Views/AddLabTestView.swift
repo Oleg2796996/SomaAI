@@ -270,31 +270,57 @@ struct AddLabTestView: View {
             // processDocument budget (proven by 4.7ao-pdf-4's
             // 2-call baseline).
             if let page = pdf.page(at: i) {
-                // Sprint 4.7ao-pdf-5d-seventh: TWO top-strip passes
-                // instead of one. The 16:05 build (5d-sixth-bis)
-                // succeeded in cropping the top 15% (7146x1516px)
-                // but the OCR still didn't find '07.11.2025'. The
-                // patient block on НКЦ2 lab PDFs appears to live
-                // in the 10-30% band of the page — a single 15%
-                // crop might be too tight if the date sits in the
-                // upper-middle (20-25%). We now run TWO strips:
-                //  - 0.05..0.20 (top 15% tightly) for ФИО/лаб
-                //  - 0.10..0.35 (top 25% wider) for 'Дата забора'
-                // and let LocalExtractor's regex find the right
-                // DD.MM.YYYY across both.
+                // Sprint 4.7ao-pdf-5d-ninth: full rewrite of the
+                // per-page Vision pipeline. The 4.7ao-pdf-5d-*
+                // sprints tried multiple combinations of top-strip
+                // (0.15, 0.30) + halves (50/50). All failed to
+                // catch the patient block date '07.11.2025' on
+                // НКЦ2 lab PDFs.
                 //
-                // Sprint 4.7ao-pdf-5d-eighth: bumped top strip to
-                // 0.30 (top 30% = up to 252pt = 3024px at 4x) to
-                // cover the 'Дата забора' which on НКЦ2 lab PDFs
-                // can sit as low as 25% of the page when the clinic
-                // block is unusually tall.
-                let topStrips = page.renderAsImageTopStrip(stripRatio: 0.30, scale: 4.0)
+                // The 16:28 photo Oleg sent of the patient block
+                // shows the layout:
+                //   Ф.И.О.: КОНОВАЛОВ ОЛЕГ АЛЕКСАНДРОВИЧ
+                //   Дата рождения: 17.01.1981 (44 г.)   Пол: М
+                //   № карты: 21847522
+                //   Биоматериал: Моча (разовая);
+                //   Доставка биоматериала: 07.11.2025 10:59
+                //
+                // Two-part fix this sprint:
+                //
+                // (A) Top-strip 0.20 at scale=5.0. Why 0.20?
+                //   - 0.15 was too tight (OCR empty).
+                //   - 0.30 catches body table ('Цилиндры
+                //     гиалиновые' at 252pt).
+                //   - 0.20 = 168pt — covers the patient block
+                //     which sits between the lab header and the
+                //     table.
+                // Why scale=5.0 (15x physical)?
+                //   - 4.0 gave 7-8pt text at 84-96 actual pixels
+                //     which Vision sometimes drops.
+                //   - 5.0 = 105-120 pixels per char — well above
+                //     Vision's drop threshold.
+                //   - 168pt × 5.0 × 3 (Retina) = 2520px tall,
+                //     595pt × 5.0 × 3 = 8925px wide — still under
+                //     Vision's ~10000px ceiling on iOS 26.5 sim.
+                //
+                // (B) Replaced halves with full-page render. The
+                // 5d-fifth halves (50/50 split) gave conf 0.29
+                // on the header and 10 markers from the body. The
+                // 4.7ao-pdf-4 (full page, scale=3.0) gave conf
+                // 0.87 and 8+ markers. Halves are an unnecessary
+                // extra call that degrades conf. Use full page
+                // instead — it's what worked in 4.7ao-pdf-4.
+                //
+                // Net effect: 2 calls per page (top-strip + full)
+                // vs. 3 calls in 5d-seventh (top-strip + 2 halves).
+                // For a 2-page PDF = 4 calls, comfortably under
+                // 75s timeout.
+                let topStrips = page.renderAsImageTopStrip(stripRatio: 0.20, scale: 5.0)
                 images.append(contentsOf: topStrips)
-                // Then the proven 50/50 halves from 4.7ao-pdf-5d-fifth
-                // — these carry the body table where the 24 markers
-                // live.
-                let bands = page.renderAsImageHalves()
-                images.append(contentsOf: bands)
+                let fullImage = page.renderAsImage(scale: 3.0)
+                if let img = fullImage {
+                    images.append(img)
+                }
             }
         }
         guard !images.isEmpty else {

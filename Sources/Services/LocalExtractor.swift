@@ -361,7 +361,21 @@ struct LocalExtractor {
         // This works even when the phrase sits in the middle of
         // the document and the FIRST date in document order is
         // the print/approval timestamp at the bottom.
-        let keywords = ["дата забора", "дата взятия", "дата сдачи", "sample collected", "sample date", "collection date", "сдача анализа", "забор крови"]
+        // Sprint 4.7ao-pdf-5e-quarter: added "доставка биоматериала",
+        // "биоматериал", "время забора" — these are the actual
+        // phrases on НКЦ2 lab PDFs. The 16:28 photo Oleg sent
+        // shows the patient block layout:
+        //   Ф.И.О.: КОНОВАЛОВ ОЛЕГ АЛЕКСАНДРОВИЧ
+        //   Дата рождения: 17.01.1981 (44 г.)   Пол: М
+        //   № карты: 21847522
+        //   Биоматериал: Моча (разовая);
+        //   Доставка биоматериала: 07.11.2025 10:59
+        // The date is preceded by "Доставка биоматериала:" —
+        // we need this phrase in our keyword list to activate
+        // Strategy 0 (keyword proximity). Without it, 5e-ter
+        // falls through to "first non-recent date" which is
+        // often the print timestamp at the bottom.
+        let keywords = ["дата забора", "дата взятия", "дата сдачи", "sample collected", "sample date", "collection date", "сдача анализа", "забор крови", "доставка биоматериала", "доставка:", "биоматериал:", "время забора", "дата доставки"]
         let lower = text.lowercased() as NSString
         var bestKeywordDate: (year: Int, month: Int, day: Int, position: Int)?
         for kw in keywords {
