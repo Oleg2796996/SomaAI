@@ -270,17 +270,25 @@ struct AddLabTestView: View {
             // processDocument budget (proven by 4.7ao-pdf-4's
             // 2-call baseline).
             if let page = pdf.page(at: i) {
-                // Sprint 4.7ao-pdf-5d-sixth: prepend a high-DPI
-                // render of JUST the top 15% of the page (where
-                // the patient name, lab name and sample date
-                // live — clinic name at ~5%, patient block at
-                // ~10-12% on НКЦ2 lab PDFs). At 4.0x scale this
-                // gives 7-8pt text at 84-96 actual pixels in the
-                // cropped image, which Vision OCR can read
-                // reliably (the halfs at 3.0x only gave 17-19
-                // pixels for the same text, which sometimes gets
-                // dropped on iOS 26.5 sim).
-                let topStrips = page.renderAsImageTopStrip(stripRatio: 0.15, scale: 4.0)
+                // Sprint 4.7ao-pdf-5d-seventh: TWO top-strip passes
+                // instead of one. The 16:05 build (5d-sixth-bis)
+                // succeeded in cropping the top 15% (7146x1516px)
+                // but the OCR still didn't find '07.11.2025'. The
+                // patient block on НКЦ2 lab PDFs appears to live
+                // in the 10-30% band of the page — a single 15%
+                // crop might be too tight if the date sits in the
+                // upper-middle (20-25%). We now run TWO strips:
+                //  - 0.05..0.20 (top 15% tightly) for ФИО/лаб
+                //  - 0.10..0.35 (top 25% wider) for 'Дата забора'
+                // and let LocalExtractor's regex find the right
+                // DD.MM.YYYY across both.
+                //
+                // Sprint 4.7ao-pdf-5d-eighth: bumped top strip to
+                // 0.30 (top 30% = up to 252pt = 3024px at 4x) to
+                // cover the 'Дата забора' which on НКЦ2 lab PDFs
+                // can sit as low as 25% of the page when the clinic
+                // block is unusually tall.
+                let topStrips = page.renderAsImageTopStrip(stripRatio: 0.30, scale: 4.0)
                 images.append(contentsOf: topStrips)
                 // Then the proven 50/50 halves from 4.7ao-pdf-5d-fifth
                 // — these carry the body table where the 24 markers

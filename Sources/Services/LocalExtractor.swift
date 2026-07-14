@@ -354,6 +354,41 @@ struct LocalExtractor {
             return d >= twoDaysAgo && d <= twoDaysAhead
         }
 
+        // Strategy 0 (Sprint 4.7ao-pdf-5e-ter): keyword boost. If
+        // the text contains phrases like "Дата забора",
+        // "Sample collected", "Дата взятия" — find the date
+        // that's CLOSEST (in text position) to that phrase.
+        // This works even when the phrase sits in the middle of
+        // the document and the FIRST date in document order is
+        // the print/approval timestamp at the bottom.
+        let keywords = ["дата забора", "дата взятия", "дата сдачи", "sample collected", "sample date", "collection date", "сдача анализа", "забор крови"]
+        let lower = text.lowercased() as NSString
+        var bestKeywordDate: (year: Int, month: Int, day: Int, position: Int)?
+        for kw in keywords {
+            let kwRange = lower.range(of: kw, options: [])
+            guard kwRange.location != NSNotFound else { continue }
+            // Find the date CLOSEST to this keyword's position.
+            // Distance = abs(date.position - keyword.location).
+            // If tied, pick the one with smaller position (earlier
+            // in the text — dates BEFORE the keyword are usually
+            // the actual date, not the print time AFTER it).
+            let candidate = allMatches.min(by: { lhs, rhs in
+                let dl = abs(lhs.position - kwRange.location)
+                let dr = abs(rhs.position - kwRange.location)
+                if dl != dr { return dl < dr }
+                return lhs.position < rhs.position
+            })
+            if let c = candidate {
+                // Only accept if within 200 chars of the keyword
+                // — if no date is near, ignore.
+                let dist = abs(c.position - kwRange.location)
+                if dist <= 200 {
+                    bestKeywordDate = c
+                    break
+                }
+            }
+        }
+
         // Strategy 1: FIRST non-recent date in document order.
         // Strategy 2: If all dates are recent, fall back to the FIRST
         // one (don't return today — caller already has it).
@@ -361,7 +396,13 @@ struct LocalExtractor {
         // not, pick the FIRST non-recent one.
         let nonRecent = allMatches.filter { !isRecent($0) }
         let chosen: (year: Int, month: Int, day: Int, position: Int)?
-        if let firstNonRecent = nonRecent.first {
+        if let kw = bestKeywordDate {
+            // Sprint 4.7ao-pdf-5e-ter: keyword boost wins over
+            // positional/recency heuristics when the keyword is
+            // present. The phrase 'дата забора' is an unambiguous
+            // signal that the date nearby is the sample date.
+            chosen = kw
+        } else if let firstNonRecent = nonRecent.first {
             chosen = firstNonRecent
         } else {
             // All dates are recent. Pick the EARLIEST one (most likely
@@ -373,7 +414,8 @@ struct LocalExtractor {
         // Sprint 4.7ao-pdf-5e: log what we found so the date-fix
         // sprint can be evaluated against real OCR content.
         let allDatesStr = allMatches.map { String(format: "%04d-%02d-%02d", $0.year, $0.month, $0.day) }.joined(separator: ", ")
-        print("[SomaAI] extractBestDate: found \(allMatches.count) date(s) — [\(allDatesStr)]; recent=\(allMatches.filter(isRecent).count); chose=\(chosen.map { String(format: "%04d-%02d-%02d", $0.year, $0.month, $0.day) } ?? "nil")")
+        let strategy = bestKeywordDate != nil ? "keyword" : (nonRecent.first != nil ? "first-non-recent" : "earliest")
+        print("[SomaAI] extractBestDate: found \(allMatches.count) date(s) — [\(allDatesStr)]; recent=\(allMatches.filter(isRecent).count); strategy=\(strategy); chose=\(chosen.map { String(format: "%04d-%02d-%02d", $0.year, $0.month, $0.day) } ?? "nil")")
         guard let ymd = chosen else { return nil }
         return String(format: "%04d-%02d-%02d", ymd.year, ymd.month, ymd.day)
     }
