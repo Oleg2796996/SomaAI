@@ -44,59 +44,52 @@ extension PDFPage {
         return image
     }
 
-    /// Sprint 4.7ao-pdf-5a: split a page into top and bottom halves,
-    /// each rendered separately. Necessary because Vision on iOS 26.5
-    /// sim has an effective processing ceiling somewhere between 2526
-    /// (where 3.0x mostly works but still misses the top header band
-    /// with the document date and patient name) and 3369 (where 4.0x
-    /// clips half the page). Even at 3.0x the first row was being
-    /// dropped in testing — splitting guarantees both halves are
-    /// well under the limit and the OCR pipeline sees the full page.
+    /// Sprint 4.7ao-pdf-5b: render the full page once at scale 3.0, then
+    /// split the resulting CGImage into top + bottom halves. This
+    /// replaces the broken renderAsImageHalves() (4.7ao-pdf-5a) which
+    /// tried to draw the page directly into a half-height CGContext
+    /// using `draw(with:to:)` — but that method scales the whole page
+    /// to fit the rect, it doesn't clip it. We ended up with
+    /// squished, garbled halves (conf 0.42, 639 chars — WORSE than
+    /// the un-split 0.87 / 1500+ char output).
     ///
-    /// Returns [top, bottom] at the same scale. If a half comes back
-    /// empty, it's still returned as a white image of the right size
-    /// so OCR gets a chance (and downstream logic doesn't have to
-    /// special-case page count).
+    /// The correct way: render ONCE at full size (Vision's
+    /// processing limit is below 2526 on iOS 26.5 sim — and at 3.0
+    /// we already proved Vision can see the top, it just drops a few
+    /// rows in the middle). After rendering, use CGImage.cropping(to:)
+    /// to extract the two halves as separate UIImages. Each half
+    /// is 1785 x 1263 px, comfortably under the limit, AND the
+    /// Vision call sees only the content of that half (no squishing,
+    /// no flip, no nonsense).
     func renderAsImageHalves(scale: CGFloat = 3.0) -> [UIImage] {
-        let pageRect = bounds(for: .mediaBox)
-        let halfHeight = pageRect.height / 2
+        guard let fullImage = renderAsImage(scale: scale),
+              let cgFull = fullImage.cgImage else {
+            // Fallback: just return the full image as a single
+            // element so the caller still has something to OCR.
+            // (Mirrors the pre-4.7ao-pdf-5a behaviour.)
+            return renderAsImage(scale: scale).map { [$0] } ?? []
+        }
+        let w = cgFull.width
+        let h = cgFull.height
+        let halfH = h / 2
         var halves: [UIImage] = []
         for halfIndex in 0..<2 {
-            // PDF coordinate system: Y grows UPWARD, origin bottom-left.
-            // The "top" of the page is pageRect.maxY (largest Y), and we
-            // draw the top half by translating to (pageRect.minY + halfHeight)
-            // and clipping to the top region.
-            let halfOriginY = pageRect.minY + (CGFloat(1 - halfIndex) * halfHeight)
-            // CGRect in PDF (Y-up) coords: x=0, y=halfOriginY, w=width, h=halfHeight
-            let halfRect = CGRect(x: pageRect.minX,
-                                  y: halfOriginY,
-                                  width: pageRect.width,
-                                  height: halfHeight)
-            let pixelSize = CGSize(width: pageRect.width * scale, height: halfHeight * scale)
-            let renderer = UIGraphicsImageRenderer(size: pixelSize)
-            let image = renderer.image { ctx in
-                UIColor.white.setFill()
-                ctx.fill(CGRect(origin: .zero, size: pixelSize))
-                ctx.cgContext.saveGState()
-                // Same Y-flip as renderAsImage(): translate to the bottom
-                // of the half, then scale Y by -1 to flip right-side up.
-                ctx.cgContext.translateBy(x: 0, y: halfRect.height)
-                ctx.cgContext.scaleBy(x: scale, y: -scale)
-                // Clip to the half in PDF coordinates so draw() doesn't
-                // paint outside it.
-                ctx.cgContext.clip(to: CGRect(x: 0,
-                                               y: 0,
-                                               width: halfRect.width,
-                                               height: halfRect.height))
-                // Move the half-rect to origin (0..width x 0..halfHeight)
-                // in the *flipped* coord system.
-                ctx.cgContext.translateBy(x: -halfRect.minX, y: -halfRect.minY)
-                draw(with: .mediaBox, to: ctx.cgContext)
-                ctx.cgContext.restoreGState()
+            // CGImage cropping coordinate system: origin top-left, Y
+            // growing DOWN (UIKit convention — confirmed in Apple docs
+            // for CGImage.cropping(to:)). So:
+            //   top half    = y=0..halfH
+            //   bottom half = y=halfH..h
+            let cropRect: CGRect
+            if halfIndex == 0 {
+                cropRect = CGRect(x: 0, y: 0, width: w, height: halfH)
+            } else {
+                cropRect = CGRect(x: 0, y: halfH, width: w, height: halfH)
             }
-            halves.append(image)
+            if let cropped = cgFull.cropping(to: cropRect) {
+                halves.append(UIImage(cgImage: cropped, scale: 1.0, orientation: .up))
+            }
         }
-        print("[SomaAI] PDF render halves: pageRect=\(Int(pageRect.width))x\(Int(pageRect.height))pt -> 2 halves at \(Int(pageRect.width * scale))x\(Int(halfHeight * scale))px (scale=\(scale))")
+        print("[SomaAI] PDF render halves: fullImage=\(w)x\(h)px (scale=\(scale)) -> 2 halves at \(w)x\(halfH)px via CGImage.cropping")
         return halves
     }
 }
