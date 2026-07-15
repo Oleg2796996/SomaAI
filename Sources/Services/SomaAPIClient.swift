@@ -709,6 +709,19 @@ final class SomaAPIClient {
                         print("[SomaAI] 5d-scan-range: recovered '\(copy.name)' ref='\(recovered.range)' unit='\(recovered.unit ?? "nil")'")
                     }
                 }
+                // 5d-scan-range-fix2: recompute flag from value+range
+                // if the LLM didn't set one or set it wrong. The
+                // postprocess above may have just added the range;
+                // computeFlag needs a fresh shot to produce Normal/High/Low.
+                let numeric = Self.extractFirstNumber(from: copy.value)
+                if let n = numeric, !(copy.referenceRange ?? "").isEmpty {
+                    if let f = Self.computeFlag(value: copy.value, reference: copy.referenceRange) {
+                        if copy.flag != f {
+                            print("[SomaAI] 5d-scan-range: flag recomputed '\(copy.name)' \(copy.flag ?? "nil") -> \(f) (n=\(n), ref=\(copy.referenceRange ?? "nil"))")
+                            copy.flag = f
+                        }
+                    }
+                }
                 patched.append(copy)
             }
             marks = patched
@@ -1636,7 +1649,14 @@ extension SomaAPIClient {
         // unit  = letters/cyrillic/%/slash (one token)
         // Must be at line start OR after whitespace, name not glued to other word.
         for cand in candidates {
-            let pattern = "(?:^|\\s|\\n)\(nameEscaped)\\s+\(NSRegularExpression.escapedPattern(for: cand))\\s+(-?\\d+(?:[.,]\\d+)?\\s*[-—–]\\s*\\d+(?:[.,]\\d+)?|<\\s*\\d+(?:[.,]\\d+)?|>-?\\s*\\d+(?:[.,]\\d+)?|\\d+(?:[.,]\\d+)?)(?:\\s+([\\p{L}%/]+))?"
+            // 5d-scan-range-fix2: stricter unit pattern — the unit
+            // (if present) must be on the SAME line, right after the
+            // range, and must be a SINGLE token. If our regex would
+            // have to span a newline to grab a unit, we drop it.
+            // Also cap unit to 1 word because "Белок", "Глюкоза",
+            // "Кетоновые тела" are next-row names that the old
+            // greedy regex happily absorbed.
+            let pattern = "(?:^|\\s|\\n)\(nameEscaped)\\s+\(NSRegularExpression.escapedPattern(for: cand))\\s+(-?\\d+(?:[.,]\\d+)?\\s*[-—–]\\s*\\d+(?:[.,]\\d+)?|<\\s*\\d+(?:[.,]\\d+)?|>-?\\s*\\d+(?:[.,]\\d+)?|\\d+(?:[.,]\\d+)?)(?:\\s+([\\p{L}%/]+))?(?:\\n|$)"
             if let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
                 let range = NSRange(rawText.startIndex..., in: rawText)
                 if let m = re.firstMatch(in: rawText, range: range) {
@@ -1648,7 +1668,11 @@ extension SomaAPIClient {
                         if m.numberOfRanges > 2, m.range(at: 2).location != NSNotFound,
                            let u = Range(m.range(at: 2), in: rawText) {
                             let uStr = String(rawText[u]).trimmingCharacters(in: .whitespaces)
-                            if uStr.count <= 12 && uStr.count >= 1 {
+                            // Only accept a unit if it's a single short
+                            // token (1 word, ≤10 chars). Anything longer
+                            // is the next row's marker name leaking in.
+                            let isSingleWord = !uStr.contains(where: { $0 == " " || $0 == "\t" })
+                            if isSingleWord && uStr.count >= 1 && uStr.count <= 10 {
                                 unit = uStr
                             }
                         }
