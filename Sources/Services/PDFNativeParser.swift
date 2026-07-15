@@ -101,18 +101,201 @@ enum PDFNativeParser {
         print("[SomaAI] PDFNativeParser: text length=\(text.count) chars; first 200: \(first200)")
         let patient = parsePatient(text: text)
 
+        // 5d-fifteenth: COORD-BASED parser using PDFSelections.
+        // PDFKit's pdf.string already has correct text, but the
+        // text merges markers/values/ranges into one line without
+        // clear column boundaries. The OLD line-based parser
+        // treated everything on the same line as one "name" and
+        // everything on subsequent lines as continuations, which
+        // merged multiple rows.
+        //
+        // Real example (НКЦ2 моча):
+        //   line[3]: 'Цвет соломенно -'    (name + value wrapped)
+        //   line[4]: 'желтый'              (continuation)
+        //   line[5]: 'соломенно -'         (next row's name + value)
+        //   line[6]: 'желтый'              (continuation)
+        //
+        // With X-coords, both rows get split into [Цвет, соломенно-желтый,
+        // соломенно-желтый] and [Белок, 0, 0 - 0,1, г/л] correctly.
+        let nPages = pdf.pageCount
+        let pageRange = 0..<nPages
+        let m1c = parseTableByCoords(in: pdf, pageRange: pageRange,
+                                      sectionHeader: "Физико-химические свойства",
+                                      debugName: "physchem")
+        let m2c = parseTableByCoords(in: pdf, pageRange: pageRange,
+                                      sectionHeader: "Микроскопическое исследование осадка",
+                                      debugName: "micro")
+        print("[SomaAI] PDFNativeParser(coord): Физико-химические = \(m1c.count) markers")
+        print("[SomaAI] PDFNativeParser(coord): Микроскопическое = \(m2c.count) markers")
+        // Use coord-based result if it's at least as good as the
+        // line-based one. If coord-based is much worse (e.g. 0),
+        // fall back to line-based.
         var markers: [PDFMarker] = []
+        let coordTotal = m1c.count + m2c.count
         let m1 = parseTable(in: text, sectionHeader: "Физико-химические свойства")
-        print("[SomaAI] PDFNativeParser: Физико-химические = \(m1.count) markers")
-        markers.append(contentsOf: m1)
         let m2 = parseTable(in: text, sectionHeader: "Микроскопическое исследование осадка")
+        let lineTotal = m1.count + m2.count
+        if coordTotal >= lineTotal {
+            print("[SomaAI] PDFNativeParser: using COORD-based result (\(coordTotal) markers)")
+            markers.append(contentsOf: m1c)
+            markers.append(contentsOf: m2c)
+        } else {
+            print("[SomaAI] PDFNativeParser: using LINE-based result (\(lineTotal) markers)")
+            markers.append(contentsOf: m1)
+            markers.append(contentsOf: m2)
+        }
+        print("[SomaAI] PDFNativeParser: Физико-химические = \(m1.count) markers")
         print("[SomaAI] PDFNativeParser: Микроскопическое = \(m2.count) markers")
-        markers.append(contentsOf: m2)
         print("[SomaAI] PDFNativeParser: total = \(markers.count) markers")
         for (idx, m) in markers.prefix(3).enumerated() {
             print("[SomaAI]   marker[\(idx)]: name='\(m.name)' value='\(m.value ?? "nil")' range='\(m.referenceRange ?? "nil")' unit='\(m.unit ?? "nil")'")
         }
         return PDFParseResult(markers: markers, patient: patient)
+    }
+
+    // MARK: - Coordinate-based parser (5d-fifteenth)
+
+    /// Build coord-aware lines from a PDFPage. PDFKit's
+    /// `selectionsForLine()` returns one PDFSelection per visual line
+    /// (groups of fragments on the same Y). We further split each
+    /// selection by horizontal gaps to get separate words.
+    private static func coordLines(in page: PDFPage) -> [(y: CGFloat, frags: [(text: String, x: CGFloat)])] {
+        var out: [(y: CGFloat, frags: [(text: String, x: CGFloat)])] = []
+        for sel in page.selections(for: .line) {
+            let bounds = sel.bounds(for: page)
+            let y = bounds.origin.y
+            var fragments: [(text: String, x: CGFloat)] = []
+            for charSel in sel.selections(for: .character) {
+                let charBounds = charSel.bounds(for: page)
+                let c = charSel.string ?? ""
+                if c.isEmpty { continue }
+                if let last = fragments.last,
+                   abs(last.x - charBounds.origin.x) < 1.0 {
+                    fragments[fragments.count - 1] = (last.text + c, last.x)
+                } else {
+                    fragments.append((c, charBounds.origin.x))
+                }
+            }
+            if !fragments.isEmpty {
+                out.append((y: y, frags: fragments))
+            }
+        }
+        return out
+    }
+
+    /// Group coord lines into rows (rows within `rowGap` of each
+    /// other share the same row). Returns rows top-to-bottom.
+    private static func groupRows(_ lines: [(y: CGFloat, frags: [(text: String, x: CGFloat)])], rowGap: CGFloat = 4) -> [[(text: String, x: CGFloat, y: CGFloat)]] {
+        guard !lines.isEmpty else { return [] }
+        // PDFKit's bounds(for: page) returns rect in page coords
+        // (origin at bottom-left). Visual "top" = higher Y. Sort
+        // DESCENDING by Y for top-to-bottom reading.
+        let sorted = lines.sorted { $0.y > $1.y }
+        var rows: [[(text: String, x: CGFloat, y: CGFloat)]] = []
+        for line in sorted {
+            let flat = line.frags.map { (text: $0.text, x: $0.x, y: line.y) }
+            if let last = rows.last, let prev = last.first,
+               abs(prev.y - line.y) <= rowGap {
+                rows[rows.count - 1].append(contentsOf: flat)
+            } else {
+                rows.append(flat)
+            }
+        }
+        return rows
+    }
+
+    /// Cluster a row's fragments into columns by horizontal gap.
+    private static func clusterColumns(frags: [(text: String, x: CGFloat, y: CGFloat)], gap: CGFloat = 10) -> [String] {
+        guard !frags.isEmpty else { return [] }
+        let sorted = frags.sorted { $0.x < $1.x }
+        var columns: [[(text: String, x: CGFloat)]] = [[sorted[0]]]
+        for f in sorted.dropFirst() {
+            let prev = columns[columns.count - 1].last!
+            if f.x - prev.x > gap {
+                columns.append([f])
+            } else {
+                columns[columns.count - 1].append(f)
+            }
+        }
+        return columns.map { $0.map { $0.text }.joined() }
+    }
+
+    /// Column-based table parser. Walks all PDFPages and extracts
+    /// markers by clustering text fragments into columns (separated
+    /// by horizontal gaps) and rows (separated by vertical gaps).
+    private static func parseTableByCoords(in pdf: PDFDocument,
+                                           pageRange: ClosedRange<Int>,
+                                           sectionHeader: String,
+                                           debugName: String) -> [PDFMarker] {
+        var markers: [PDFMarker] = []
+        for pageIdx in pageRange {
+            guard let page = pdf.page(at: pageIdx) else { continue }
+            let lines = coordLines(in: page)
+            let rows = groupRows(lines)
+            print("[SomaAI] coordParse[\(debugName).p\(pageIdx)]: \(rows.count) rows from \(lines.count) selections")
+            // Find the section header row.
+            var sectionStart: Int? = nil
+            for (idx, row) in rows.enumerated() {
+                let rowText = row.map { $0.text }.joined()
+                if rowText.contains(sectionHeader) {
+                    sectionStart = idx
+                    break
+                }
+            }
+            guard let start = sectionStart else {
+                print("[SomaAI] coordParse[\(debugName).p\(pageIdx)]: section header '\(sectionHeader)' not found")
+                continue
+            }
+            // Skip column header rows (Показатель/Результат/Норма/...)
+            var i = start + 1
+            var skipped = 0
+            while i < rows.count && skipped < 3 {
+                let row = rows[i]
+                let cols = clusterColumns(frags: row)
+                let first = cols.first ?? ""
+                let isColumnHeader =
+                    first.contains("Показатель") ||
+                    first.contains("Результат") ||
+                    first == "Комментарий" ||
+                    first.isEmpty
+                if isColumnHeader { skipped += 1; i += 1; continue }
+                break
+            }
+            // Parse markers.
+            while i < rows.count {
+                let row = rows[i]
+                let cols = clusterColumns(frags: row)
+                guard let first = cols.first else { i += 1; continue }
+                if sectionHeaders.contains(first) { break }
+                if stopLines.contains(first) { break }
+                if first.isEmpty || first.contains("Показатель") {
+                    i += 1; continue
+                }
+                guard first.first?.isUppercase == true else { i += 1; continue }
+                guard first.count >= 3 else { i += 1; continue }
+                guard !isValue(first), !isUnit(first) else { i += 1; continue }
+                let name = first
+                let value = cols.count > 1 ? cols[1] : nil
+                let range = cols.count > 2 ? cols[2] : nil
+                var unit: String? = nil
+                var comment: String? = nil
+                if cols.count > 3 {
+                    let c3 = cols[3]
+                    if isUnit(c3) { unit = c3 }
+                    else { comment = c3 }
+                }
+                if cols.count > 4 { comment = cols[4] }
+                markers.append(PDFMarker(
+                    name: name,
+                    value: (value?.isEmpty == false) ? value : nil,
+                    unit: (unit?.isEmpty == false) ? unit : nil,
+                    referenceRange: (range?.isEmpty == false) ? range : nil,
+                    comment: (comment?.isEmpty == false) ? comment : nil
+                ))
+                i += 1
+            }
+        }
+        return markers
     }
 
     // MARK: - Patient
