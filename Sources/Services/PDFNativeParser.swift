@@ -339,35 +339,60 @@ enum PDFNativeParser {
                     else { comment = t }
                 }
                 if valueTokens.count >= 4 { comment = valueTokens[3] }
-                // 5d-seventeenth: handle range with literal hyphen.
-                // '5' + '-' + '7,5' (PDFKit may split '5 - 7,5'
-                // into 3 separate tokens). Glue them back into
-                // '5 - 7,5'.
-                if valueTokens.count >= 3,
-                   let v0 = valueTokens.first, isValue(v0),
-                   let v1 = valueTokens.dropFirst().first,
-                   v1 == "-" || v1 == "—" || v1 == "–" {
-                    let v2 = valueTokens[2]
-                    range = "\(v0) - \(v2)"
-                    // Shift everything else by 2: tokens[3..] become
-                    // unit-or-comment.
-                    if valueTokens.count >= 4 {
-                        let t = valueTokens[3]
-                        if isUnit(t) { unit = t }
-                        else { comment = t }
+                // 5d-eighteenth: handle range with literal hyphen.
+                // PDFKit may emit '5 - 7,5' as 3 tokens ['5', '-',
+                // '7,5'] where the position of '-' varies. Find
+                // the '-' in valueTokens and glue [before] + ' - '
+                // + [after] into range.
+                if let dashIdx = valueTokens.firstIndex(where: { $0 == "-" || $0 == "—" || $0 == "–" }),
+                   dashIdx > 0, dashIdx < valueTokens.count - 1 {
+                    let before = valueTokens[dashIdx - 1]
+                    let after = valueTokens[dashIdx + 1]
+                    if isValue(before), isValue(after) {
+                        range = "\(before) - \(after)"
+                        // valueTokens[..dashIdx-1] stays as value
+                        // (already set), valueTokens[dashIdx+2..]
+                        // become unit-or-comment.
+                        let remaining = Array(valueTokens.dropFirst(dashIdx + 2))
+                        if remaining.count >= 1 {
+                            let t = remaining[0]
+                            if isUnit(t) { unit = t }
+                            else { comment = t }
+                        }
+                        if remaining.count >= 2 { comment = remaining[1] }
                     }
-                    if valueTokens.count >= 5 { comment = valueTokens[4] }
                 }
-                // 5d-seventeenth: de-dup value. PDFKit sometimes
+                // 5d-eighteenth: de-dup value. PDFKit sometimes
                 // repeats the same phrase twice ('соломенно-желтый
-                // соломенно-желтый'). Detect by value containing
-                // itself as a substring.
+                // соломенно-желтый'). Also: handle 'X X' where
+                // second is exact copy of first.
                 if let v = value, v.count > 5 {
+                    // Try splitting in half and check both halves.
                     let mid = v.index(v.startIndex, offsetBy: v.count / 2)
                     let first = String(v[..<mid]).trimmingCharacters(in: .whitespaces)
                     let second = String(v[mid...]).trimmingCharacters(in: .whitespaces)
                     if !first.isEmpty && first == second {
                         value = first
+                    } else {
+                        // 5d-eighteenth: 'соломенно желтый соломенно -
+                        // желтый' — drop ' соломенно -' before last
+                        // 'желтый' if pattern matches.
+                        if v.contains(" - "),
+                           let dashRange = v.range(of: " - ") {
+                            let before = v[..<dashRange.lowerBound]
+                            let after = v[dashRange.upperBound...]
+                            // 'соломенно желтый соломенно -желтый' →
+                            // before='соломенно желтый соломенно'
+                            // after='желтый'. Glue 'before + after' but
+                            // drop trailing 'before' word if it's a
+                            // duplicate of 'after' prefix.
+                            let beforeTrim = before.trimmingCharacters(in: .whitespaces)
+                            if beforeTrim.hasSuffix(String(after)) {
+                                value = beforeTrim + " " + after
+                            } else {
+                                value = String(before) + String(after)
+                            }
+                        }
                     }
                 }
                 markers.append(PDFMarker(
