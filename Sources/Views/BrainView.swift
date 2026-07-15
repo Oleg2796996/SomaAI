@@ -159,6 +159,12 @@ struct BrainView: View {
         var fragments: [String: String] = [:]
         var anyMatch = false
 
+        // 5d-twenty-fourth (DIAG): log which tests/markers we iterate
+        print("[SomaAI] buildContextFragments: question='\(question.prefix(60))' tests.count=\(tests.count)")
+        for (i, t) in tests.enumerated() {
+            print("[SomaAI]   tests[\(i)] = '\(t.testName)' date=\(t.date) markers=\(t.markers.count) structuredFields=\(t.structuredFields.count)")
+        }
+
         for test in tests {
             // --- Lab markers (existing) ---
             for marker in test.markers {
