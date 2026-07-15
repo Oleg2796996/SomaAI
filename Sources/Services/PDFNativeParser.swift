@@ -154,25 +154,24 @@ enum PDFNativeParser {
     }
 
 
-    // MARK: - Line-aware parser (5d-fifteenth-patch)
+    // MARK: - Line-aware parser (5d-sixteenth)
 
-    /// iOS PDFKit does NOT expose per-word or per-character
-    /// X-coordinates through public API. We have only
-    /// `selectionsForLine()` (one PDFSelection per visual line)
-    /// and `sel.bounds(for: page)` (the bounding box of the
-    /// whole line).
+    /// iOS PDFKit public API is `pdf.string` (a single string) and
+    /// `page.string` (string of one page). There is NO
+    /// per-line / per-word public API on iOS — `selectionsForLine()`
+    /// is macOS-only.
     ///
     /// Real PDFKit output (НКЦ2 моча, observed in logs):
     ///   'Цвет соломенно -'
-    ///   'желтый'                         (continuation, lowercase)
-    ///   'соломенно -'                    (next row's name+value, lowercase!)
+    ///   'желтый'                              (continuation, lowercase)
+    ///   'соломенно -'                         (next row's name+value, lowercase)
     ///   'желтый'
-    ///   'Прозрачность прозрачная прозрачная'   (3 cols, single space)
+    ///   'Прозрачность прозрачная прозрачная'  (3 cols, single space)
     ///   'Относительная плотность 1,027 1,008 - 1,025 г/мл повышено'  (5 cols)
-    ///   'Реакция 6 5 - 7,5'              (3 cols, name + 2 values)
+    ///   'Реакция 6 5 - 7,5'                   (3 cols, name + 2 values)
     ///
-    /// Strategy: walk all visual lines. For each line, decide if
-    /// it starts a NEW marker (first token is a Capitalized Name)
+    /// Strategy: walk all lines. For each line, decide if it
+    /// starts a NEW marker (first token is a Capitalized Name)
     /// or CONTINUES the previous one (lowercase or digit first).
     /// Within a marker line, split tokens and classify them into
     /// value / range / unit / comment by shape.
@@ -183,10 +182,13 @@ enum PDFNativeParser {
         var markers: [PDFMarker] = []
         for pageIdx in pageRange {
             guard let page = pdf.page(at: pageIdx) else { continue }
-            // selectionsForLine is iOS 11+ public API. Returns
-            // one PDFSelection per visual line.
-            let lines: [String] = page.selectionsForLine()
-                .map { $0.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+            // iOS PDFKit: page.string is the per-page text.
+            let raw = page.string ?? ""
+            let lines: [String] = raw
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             print("[SomaAI] coordParse[\(debugName).p\(pageIdx)]: \(lines.count) visual lines from page")
             // Find section header.
@@ -221,7 +223,6 @@ enum PDFNativeParser {
                    l.hasPrefix("Исследование") {
                     break
                 }
-                // First non-empty token.
                 let firstTok = l.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? l
                 let firstTokTrimmed = firstTok.trimmingCharacters(in: .whitespaces)
                 let startsLower = firstTokTrimmed.first?.isLowercase == true
@@ -256,7 +257,6 @@ enum PDFNativeParser {
                                 comment: last.comment
                             )
                         } else {
-                            // No value yet — this line is the value.
                             markers[markers.count - 1] = PDFMarker(
                                 name: last.name,
                                 value: l,
