@@ -529,7 +529,19 @@ struct AddLabTestView: View {
                 if testName.trimmingCharacters(in: .whitespaces).isEmpty {
                     testName = "Анализ — НКЦ2"
                 }
-                dateIsFromExtraction = true
+                // 5d-twenty-second: set date from pdfNativeDate
+                // in the short-circuit branch. The non-short-
+                // circuit branch already does this (line ~556 in
+                // the OCR/LLM path) but native marker shortcut
+                // was returning before assigning self.date, so
+                // the verification sheet showed today's date.
+                var dateFromExtraction = false
+                if let pdfDate = pdfNativeDate, let parsed = Self.parseExtractionDate(pdfDate) {
+                    date = parsed
+                    dateFromExtraction = true
+                    print("[SomaAI] document date set from PDF NATIVE text (shortcut): \(parsed) (overriding today)")
+                }
+                self.dateIsFromExtraction = dateFromExtraction
                 // Skip LLM entirely — go straight to verification.
                 await MainActor.run {
                     isProcessing = false
