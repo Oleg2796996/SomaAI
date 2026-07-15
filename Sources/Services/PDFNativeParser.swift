@@ -159,40 +159,58 @@ enum PDFNativeParser {
         "Комментарий", "Единицы",
     ]
 
-    /// Heuristic: is this line a marker NAME (Cyrillic title that
-    /// doesn't start with a digit, isn't a number, isn't a known
-    /// stop/header line)?
+    /// Heuristic: is this line a marker NAME?
     ///
-    /// CRITICAL: in pdf.string from iOS PDFKit, marker names are
-    /// followed by value lines. The value lines can be Cyrillic
-    /// ("соломенно", "желтый", "прозрачная", "единичные") or
-    /// numeric ("1,027", "0 - 0,1"). To avoid mis-classifying
-    /// values as marker names, we use a STRICT whitelist of
-    /// known marker names from НКЦ2 lab PDFs.
+    /// 5d-fourteenth redesign: iOS PDFKit's pdf.string emits a SINGLE
+    /// line that contains both the marker name AND the value, separated
+    /// by 2+ spaces. Examples from НКЦ2 PDF (real logs):
+    ///   'Цвет соломенно -'           (line[3])
+    ///   'желтый'                     (line[4], continuation of soft-hyphen wrap)
+    ///   'Прозрачность прозрачная прозрачная'  (line[7])
+    ///   'Относительная плотность 1,027 1,008 - 1,025 г/мл повышено'  (line[8])
+    ///
+    /// Strategy: split each line by 2+ spaces. The first chunk is the
+    /// candidate name. Then test that candidate against the same strict
+    /// checks as before.
     private static func isMarkerName(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return false }
         // Reject known stop lines.
         if stopLines.contains(t) { return false }
         if sectionHeaders.contains(t) { return false }
-        // Reject pure numerics / ranges.
+        // Pure numerics / ranges are not names.
         if t.allSatisfy({ "0123456789,.- \t".contains($0) }) { return false }
-        // Reject lines that start with a digit.
-        if t.first?.isNumber == true { return false }
-        // Reject value-shaped lines (numeric range, "не обнаружено",
-        // "отсутствуют", "отрицательно", "единичные", "небольшое",
-        // color words like "желтый", "прозрачная", "соломенно").
-        if isValue(t) { return false }
-        // Reject unit-shaped lines.
-        if isUnit(t) { return false }
-        // Reject short lines (< 3 chars) that are likely fragments.
-        guard t.count >= 3 else { return false }
-        // Reject lines that are pure lowercase Russian (likely
-        // comments / values, not marker names). Marker names
-        // typically start with a capital letter.
-        let firstChar = t.first!
-        if firstChar.isLowercase { return false }
+        // Take the FIRST column as the candidate name (PDFKit uses
+        // 2+ spaces as column separator).
+        let columns = t.components(separatedBy: "  ")  // 2-space separator (PDFKit default)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let candidate = columns.first ?? t
+        // If the candidate itself is a value or unit, this is not a
+        // marker line.
+        if isValue(candidate) { return false }
+        if isUnit(candidate) { return false }
+        // Must start with a capital letter (marker names are Capitalized;
+        // value lines like 'соломенно', 'желтый', 'прозрачная' are not).
+        guard let first = candidate.first, first.isUppercase else { return false }
+        // Reject very short fragments (< 3 chars).
+        guard candidate.count >= 3 else { return false }
         return true
+    }
+
+    /// Extract the name (first column) from a marker line. PDFKit
+    /// uses 2+ spaces as column separator.
+    private static func extractName(from line: String) -> String? {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        let columns = t.components(separatedBy: "  ")  // 2-space separator (PDFKit default)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let first = columns.first else { return nil }
+        guard first.first?.isUppercase == true else { return nil }
+        guard !isValue(first), !isUnit(first) else { return nil }
+        guard first.count >= 3 else { return nil }
+        return first
     }
 
     /// Is this line a unit? Matches: г/л, мг/л, ммоль/л, мкмоль/л,
@@ -293,102 +311,107 @@ enum PDFNativeParser {
             while i < total, lines[i].isEmpty { i += 1 }
             guard i < total else { break }
 
-            let name = lines[i]
+            let raw = lines[i]
             // Stop at section boundary or footer.
-            if stopLines.contains(name) { break }
-            if sectionHeaders.contains(name) { break }
+            if stopLines.contains(raw) { break }
+            if sectionHeaders.contains(raw) { break }
 
-            // If this is not a marker name, just skip it.
-            guard isMarkerName(name) else {
+            // If this is not a marker line, just skip it.
+            guard isMarkerName(raw) else {
                 i += 1
                 continue
             }
 
-            // Read the next non-empty lines until we hit the next
-            // marker name or section boundary.
-            var rowLines: [String] = []
+            // 5d-fourteenth: PDFKit often puts the value on the SAME
+            // line as the name, separated by 2+ spaces. Example:
+            //   'Цвет соломенно -'          → name='Цвет', inlineValue='соломенно -'
+            //   'Прозрачность прозрачная прозрачная'  → name='Прозрачность', inlineValue='прозрачная', ref='прозрачная'
+            //   'Относительная плотность 1,027 1,008 - 1,025 г/мл повышено'
+            //        → name='Относительная плотность', value='1,027',
+            //          range='1,008 - 1,025', unit='г/мл', comment='повышено'
+            let name = extractName(from: raw) ?? raw
+            let columns = raw.trimmingCharacters(in: .whitespaces)
+            .components(separatedBy: "  ")  // PDFKit uses 2+ spaces as column separator
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let inlineColumns = Array(columns.dropFirst())  // everything after the name
+
+            // Read the next non-empty lines (continuations of wrapped
+            // values, or second-row columns that PDFKit may have split).
+            var continuation: [String] = []
             var j = i + 1
             while j < total {
                 let l = lines[j]
                 if l.isEmpty { j += 1; continue }
                 if stopLines.contains(l) || sectionHeaders.contains(l) { break }
                 if isMarkerName(l) { break }
-                rowLines.append(l)
+                continuation.append(l)
                 j += 1
-                // Don't collect forever — cap at 6 lines per row
-                // to avoid eating the next section.
-                if rowLines.count >= 6 { break }
+                if continuation.count >= 4 { break }
             }
 
-            // Classify the row lines: first non-empty is value,
-            // second is range, third is comment or unit (depending
-            // on shape), fourth is the remaining.
-            // Heuristic: if a line looks like a unit, it's the
-            // unit. If a line looks like a value AND has no digits,
-            // it's a value or range. If a line is long Russian
-            // text (>15 chars and not a unit), it's a comment.
+            // Build the row from inline columns + continuations.
+            // PDFKit splits long values with soft-hyphen across lines,
+            // e.g. 'соломенно -' / 'желтый' should join to 'соломенно-желтый'.
+            // We do that by concatenation-with-hyphen when a continuation
+            // starts with a lowercase letter (it's a wrapped word).
+            var allColumns: [String] = inlineColumns
+            for c in continuation {
+                if let last = allColumns.last,
+                   last.hasSuffix(" -") || last.hasSuffix("-"),
+                   c.first?.isLowercase == true {
+                    // Wrap continuation: join with hyphen.
+                    var joined = last
+                    joined.removeLast()  // drop the trailing '-'
+                    joined += c
+                    allColumns[allColumns.count - 1] = joined
+                } else {
+                    allColumns.append(c)
+                }
+            }
+
+            // Classify columns into value / range / unit / comment.
+            // 1st = value, 2nd = range, 3rd = unit or comment,
+            // 4th = comment.
             var value: String? = nil
             var range: String? = nil
             var unit: String? = nil
             var comment: String? = nil
-
-            // The first line in rowLines is almost always the value.
-            if !rowLines.isEmpty {
-                value = rowLines[0]
-            }
-            // The second is usually the range (it's a numeric or
-            // "не обнаружено").
-            if rowLines.count >= 2 {
-                range = rowLines[1]
-            }
-            // Lines 3+ — figure out which is unit and which is
-            // comment. Unit if matches isUnit; comment otherwise.
-            for k in 2..<rowLines.count {
-                let l = rowLines[k]
-                if isUnit(l) && unit == nil {
-                    unit = l
-                } else if comment == nil {
-                    // If the line contains a digit and looks like
-                    // an "X-Y" pattern, treat as range continuation.
-                    if l.contains("-") && l.allSatisfy({ "0123456789,-. ".contains($0) || $0.isLetter }) {
-                        if let r = range, r.contains("-") {
-                            // already have a range, treat as comment
-                            comment = l
-                        } else {
-                            range = l
-                        }
-                    } else {
-                        comment = l
-                    }
+            if allColumns.count >= 1 { value = allColumns[0] }
+            if allColumns.count >= 2 { range = allColumns[1] }
+            if allColumns.count >= 3 {
+                let third = allColumns[2]
+                if isUnit(third) {
+                    unit = third
+                } else {
+                    comment = third
                 }
             }
+            if allColumns.count >= 4 { comment = allColumns[3] }
 
-            // If the marker name is purely "Цвет" or similar and
-            // the value/range got split (e.g. "соломенно -" /
-            // "желтый"), join them.
-            if let v = value, v.hasSuffix(" -") || v == "соломенно" {
-                if let next = rowLines.dropFirst().first {
-                    value = v + " " + next
-                    // shift: the next line is consumed.
-                    if rowLines.count >= 2 { range = rowLines.count >= 3 ? rowLines[2] : nil }
-                    if rowLines.count >= 4 { /* unit = rowLines[3] */ }
-                    if rowLines.count >= 5 { /* comment = rowLines[4] */ }
-                }
-            }
-            if let r = range, r.hasSuffix(" -") || r == "соломенно" {
-                if let next = rowLines.dropFirst().first {
-                    range = r + " " + next
-                }
-            }
-
-            markers.append(PDFMarker(
+            // Filter out cases where the value is actually a duplicate
+            // of the name (no real value). Example: when PDFKit emits
+            // a row as 'Неорганиз. осадок мочи (соли) отсутствуют отсутствуют'
+            // we'd get name='Неорганиз. осадок мочи (соли)',
+            // value='отсутствуют', range='отсутствуют' — which is fine.
+            // But sometimes the inlineValue is a continuation word
+            // ('желтый' alone) that joined into nothing useful. If
+            // value is a single lowercase word and there's no range,
+            // and we have a 'name value' line, we should leave value
+            // as-is (it was wrapped from a longer value).
+            let m = PDFMarker(
                 name: name,
-                value: (value?.isEmpty == false) ? value : nil,
-                unit: (unit?.isEmpty == false) ? unit : nil,
-                referenceRange: (range?.isEmpty == false) ? range : nil,
-                comment: (comment?.isEmpty == false) ? comment : nil
-            ))
+                value: value,
+                referenceRange: range,
+                unit: unit
+            )
+            markers.append(m)
             i = j
+        }
+
+        print("[SomaAI] parseTable[\(sectionHeader)]: parsed \(markers.count) markers")
+        for (idx, m) in markers.prefix(5).enumerated() {
+            print("[SomaAI]   parsed[\(idx)]: name='\(m.name)' value='\(m.value ?? "nil")' range='\(m.referenceRange ?? "nil")' unit='\(m.unit ?? "nil")'")
         }
         return markers
     }
