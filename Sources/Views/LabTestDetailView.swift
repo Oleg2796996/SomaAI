@@ -87,44 +87,63 @@ struct LabTestDetailView: View {
     }
 
     private func markerRow(_ marker: LabMarker) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(marker.name).font(.headline)
-                    if let ref = marker.referenceRange, !ref.isEmpty {
-                        Text(isRU ? "Норма: \(ref)" : "Reference: \(ref)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                Spacer()
-                HStack(spacing: 4) {
-                    // Sprint 4.7ag: switch from .foregroundColor (dropped on
-                    // iOS 26.5 simulator per 4.7ad post-mortem) to a colored
-                    // capsule background around the value. Color is a 22% tint
-                    // of flagColor so the row text stays legible.
-                    HStack(spacing: 4) {
-                        Text(marker.value).fontWeight(.bold)
-                        Text(marker.unit ?? "").foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(
-                        Capsule().fill(
-                            (marker.flag.flatMap(flagColor(for:)) ?? Color.red).opacity(0.22)
-                        )
-                    )
+        // 5d-ui-table: переписано на Grid с фиксированными
+        // колонками. Идея:
+        //   name        | value | unit | flag-pill
+        //   (range)     |       |      |
+        // Name = 2 строки, value = 1 строка (lineLimit 1, ellipsis),
+        // unit = серая 1 строка, flag = компактный цветной pill
+        // шириной ~60pt. Справа вертикальный стек unit+flag.
+        let name = marker.name
+        let value = marker.value
+        let unit = marker.unit ?? ""
+        let range = marker.referenceRange ?? ""
+        let flag = marker.flag ?? ""
+        return HStack(alignment: .center, spacing: 8) {
+            // Name + range column (flexible, takes leftover)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(.subheadline).fontWeight(.medium)
+                    .lineLimit(1).truncationMode(.tail)
+                if !range.isEmpty {
+                    Text(range)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
                 }
             }
-            if let flag = marker.flag, !flag.isEmpty {
-                HStack {
-                    Spacer()
-                    Text(flag)
-                        .font(.caption).fontWeight(.semibold)
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(flagColor(for: flag))
-                        .foregroundColor(.white)
-                        .clipShape(Capsule())
-                }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Value (single line, ellipsis, bold)
+            Text(value)
+                .font(.subheadline).fontWeight(.semibold)
+                .lineLimit(1).truncationMode(.tail)
+                .padding(.horizontal, 8).padding(.vertical, 2)
+                .background(
+                    Capsule().fill(
+                        (marker.flag.flatMap(flagColor(for:)) ?? Color.red).opacity(0.22)
+                    )
+                )
+                .frame(minWidth: 50, maxWidth: 110, alignment: .center)
+            // Unit (single line, gray, narrow)
+            if !unit.isEmpty {
+                Text(unit)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(width: 40, alignment: .leading)
+            } else {
+                Spacer().frame(width: 40)
+            }
+            // Flag pill (compact, colored, 60pt)
+            if !flag.isEmpty {
+                Text(flag)
+                    .font(.caption2).fontWeight(.bold)
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 22)
+                    .background(flagColor(for: flag))
+                    .clipShape(Capsule())
+            } else {
+                Spacer().frame(width: 60)
             }
         }
         .padding(.vertical, 4)
