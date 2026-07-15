@@ -169,7 +169,10 @@ struct BrainView: View {
             // --- Lab markers (existing) ---
             for marker in test.markers {
                 let nameLower = marker.name.lowercased()
-                let nameWords = nameLower.split(separator: " ")
+                let nameWords = nameLower
+                    .split(separator: " ")
+                    .map(String.init)
+                    .filter { $0.count >= 3 }  // 5d-twenty-fifth: drop short words like "на", "по", "в", "и" — they false-match every Russian sentence (e.g. "на" appears in "анализ", "натрий", "начало").
                 let synonyms = markerSynonyms(for: nameLower)
 
                 let hit = lowercased.contains(nameLower)
