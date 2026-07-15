@@ -1422,10 +1422,74 @@ extension SomaAPIClient {
     /// "Normal", "High", or "Low". Returns nil if reference is missing
     /// or the value is not a number.
     static func computeFlag(value: String, reference: String?) -> String? {
+        // 5d-nineteenth: text-value rules (qualitative markers in
+        // urine/semen). Match in priority order:
+        //   - "negative" patterns  -> Normal
+        //   - "positive" patterns  -> High
+        //   - "absent" patterns    -> Normal
+        //   - "present" patterns   -> High (mostly pathological for
+        //     urine — bacteria, blood, sugar, protein etc.)
+        //   - "trace" patterns     -> Normal (small/trace is OK)
+        //   - morphological descriptors ('неизмененные',
+        //     'гиалиновые' in small count) -> Normal
+        let valueLower = value.lowercased().trimmingCharacters(in: .whitespaces)
+        let refLower = (reference ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        // 1. Negative / absence patterns -> Normal
+        let negativePatterns = [
+            "отрицательно", "отсутствуют", "не обнаружено", "не обнаружен",
+            "не выявлено", "не найдено", "нет", "негативно", "negative",
+            "neg", "absent", "not detected", "неизмененные",
+            "прозрачная", "соломенно"
+        ]
+        for p in negativePatterns where valueLower.contains(p) || refLower.contains(p) {
+            return "Normal"
+        }
+        // 2. Positive / present patterns -> High
+        let positivePatterns = [
+            "положительно", "обнаружено", "обнаружен", "выявлено",
+            "присутствуют", "есть", "позитивно", "positive", "pos",
+            "detected", "present", "большое", "значительное"
+        ]
+        for p in positivePatterns where valueLower.contains(p) {
+            return "High"
+        }
+        // 3. "small/trace/единичные" patterns -> mostly Normal
+        let tracePatterns = [
+            "небольшое", "единичные", "мало", "немного", "следы",
+            "trace", "small", "few", "гиалиновые"
+        ]
+        for p in tracePatterns where valueLower.contains(p) {
+            return "Normal"
+        }
+        // 4. Now try numeric path
         guard let reference = reference, !reference.isEmpty else { return nil }
-        // Normalize: replace comma decimal with dot
+        // 5d-nineteenth: handle value="0-1" with range="0,00 - 3,00".
+        // PDFKit sometimes emits small integer ranges as values.
+        // If value looks like a tiny range (A - B where A and B are
+        // numbers and B < 100), pick the larger endpoint.
+        let valueNormForRangeCheck = value.replacingOccurrences(of: ",", with: ".")
+        let valueParts = valueNormForRangeCheck
+            .replacingOccurrences(of: "–", with: "-")
+            .replacingOccurrences(of: "—", with: "-")
+            .components(separatedBy: "-")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if valueParts.count == 2,
+           let v0 = Double(valueParts[0]), let v1 = Double(valueParts[1]),
+           v0 >= 0, v1 >= 0, v1 < 100 {
+            // Use the max endpoint (the observation, not the bracket)
+            let effectiveValue = max(v0, v1)
+            return computeFlagForNumber(
+                num: effectiveValue, reference: reference
+            )
+        }
         let normalizedValue = value.replacingOccurrences(of: ",", with: ".")
         guard let num = Double(normalizedValue) else { return nil }
+        return computeFlagForNumber(num: num, reference: reference)
+    }
+
+    /// 5d-nineteenth: extracted numeric flag computation
+    /// (so we can call it for both raw value and value-range cases).
+    private static func computeFlagForNumber(num: Double, reference: String) -> String? {
         // Parse "< 5.6", "> 10", "4.2 - 5.6", "0.0 - 1.0"
         let ref = reference.replacingOccurrences(of: ",", with: ".")
         // Normalize dashes: "4.2-5.6" → "4.2 - 5.6" (also "–" en-dash, "—" em-dash)
