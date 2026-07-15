@@ -402,8 +402,9 @@ enum PDFNativeParser {
             let m = PDFMarker(
                 name: name,
                 value: value,
+                unit: unit,
                 referenceRange: range,
-                unit: unit
+                comment: comment
             )
             markers.append(m)
             i = j
