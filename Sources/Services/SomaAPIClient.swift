@@ -1450,12 +1450,17 @@ extension SomaAPIClient {
             return "Normal"
         }
         // 2. Positive / present patterns -> High
+        // 5d-twenty-first: also check range, not just value. For
+        // markers like 'Бактерии' where value got mangled by
+        // continuation merge ('не кол-во в поле зр.') but range
+        // is the meaningful word ('обнаружено'), we need to look
+        // at the range too.
         let positivePatterns = [
             "положительно", "обнаружено", "обнаружен", "выявлено",
             "присутствуют", "есть", "позитивно", "positive", "pos",
             "detected", "present", "значительное"
         ]
-        for p in positivePatterns where valueLower.contains(p) {
+        for p in positivePatterns where valueLower.contains(p) || refLower.contains(p) {
             return "High"
         }
         // 3. Now try numeric path
