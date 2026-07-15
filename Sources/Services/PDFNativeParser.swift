@@ -87,11 +87,45 @@ enum PDFNativeParser {
         let patient: PDFPatientInfo
     }
 
+    /// 5d-scan-regex-first: parse markers directly from a pre-cleaned
+    /// OCR text. Used by the scan pipeline to skip the LLM extraction
+    /// step when the text has the same lab-table structure as our PDF
+    /// parser. Falls back to LLM only if < 5 markers are recovered.
+    ///
+    /// Returns the same PDFParseResult as `parse(pdf:)` so the rest
+    /// of the pipeline (processAndVerify, LabTestDetailView) works
+    /// without any code changes.
+    static func parse(text ocrText: String) -> PDFParseResult? {
+        let cleaned = ocrText.replacingOccurrences(of: "\r\n", with: "\n")
+                             .replacingOccurrences(of: "\r", with: "\n")
+        guard cleaned.count > 200 else { return nil }
+        let physchem = parseTable(in: cleaned, sectionHeader: "Физико-химические свойства")
+        let micro    = parseTable(in: cleaned, sectionHeader: "Микроскопическое исследование осадка")
+        var all: [PDFMarker] = []
+        all.append(contentsOf: physchem)
+        all.append(contentsOf: micro)
+        // De-dup by name+value (line-aware parser can double-emit on
+        // certain OCR-merged rows).
+        var seen: Set<String> = []
+        all = all.filter { m in
+            let k = (m.name.lowercased()) + "|" + (m.value ?? "").lowercased()
+            return seen.insert(k).inserted
+        }
+        if all.count < 5 {
+            print("[SomaAI] PDFNativeParser(text): only \(all.count) markers (need >=5) — falling back to LLM")
+            return nil
+        }
+        print("[SomaAI] PDFNativeParser(text): recovered \(all.count) markers (physchem=\(physchem.count) micro=\(micro.count))")
+        let patient = parsePatient(text: cleaned)
+        return PDFParseResult(markers: all, patient: patient)
+    }
+
     static func parse(pdf: PDFDocument) -> PDFParseResult? {
         // iOS PDFKit may use \r, \n, or \r\n as line separators.
         // Normalise to \n first.
         let raw = pdf.string
         guard let raw, raw.count > 200 else {
+
             print("[SomaAI] PDFNativeParser: text too short or nil (\(raw?.count ?? 0) chars)")
             return nil
         }

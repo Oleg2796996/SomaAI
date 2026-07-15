@@ -506,6 +506,28 @@ struct AddLabTestView: View {
             apiError = "OCR quality is poor (confidence \(Int(result.confidence * 100))%). The extracted text may be incomplete. Try a clearer scan or higher-resolution image."
             showingErrorAlert = true
         }
+
+        // 5d-scan-regex-first: try native line-aware parser on the
+        // OCR text. If the document has the standard lab table
+        // headers (Физико-химические свойства / Микроскопическое
+        // исследование осадка), we get markers WITHOUT calling
+        // the LLM extractor — saving 5-10 seconds per scan.
+        if !isPDF {
+            if let parsed = PDFNativeParser.parse(text: result.text), parsed.markers.count >= 5 {
+                print("[SomaAI] 5d-scan-regex-first: recovered \(parsed.markers.count) markers from OCR text (skipping LLM extract)")
+                self.pdfNativeMarkers = parsed.markers
+                if testName.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let name = parsed.patient.fullName, !name.isEmpty {
+                    testName = "Анализ от \(name)"
+                }
+                if provider.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let lab = parsed.patient.laboratory, !lab.isEmpty {
+                    provider = lab
+                }
+            } else {
+                self.pdfNativeMarkers = nil
+            }
+        }
     }
 
     private func processAndVerify() {
