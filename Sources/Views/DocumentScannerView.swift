@@ -6,18 +6,26 @@ import VisionKit
 /// capture for free. Replaces the bare UIImagePickerController which
 /// had none of those.
 ///
-/// `UIViewControllerRepresentable` protocol methods are public, so
-/// the wrapping struct + its `Coordinator` must be public too. All
-/// inherited public requirements are marked `public` explicitly here.
+/// 5d-scanner-fix: added onComplete callback. The previous design
+/// used a `@Binding var scannedImages: [UIImage]` to ferry pages
+/// back to AddLabTestView. That's the canonical SwiftUI bug:
+/// when `parent.scannedImages = imgs` fires inside the delegate,
+/// the sheet has already begun dismissing, so the binding write
+/// silently no-ops and `.onChange(of: scannedPages)` never fires.
+/// (The `ImagePicker` next to this has the same flaw but only for
+/// single images, which still work by accident because UIImage
+/// bindings survive dismissal — [UIImage] does not.) We now call
+/// `onComplete(imgs)` synchronously from the delegate, which the
+/// parent captures into a `Task` before the sheet tears down.
 public struct DocumentScannerView: UIViewControllerRepresentable {
-    @Binding var scannedImages: [UIImage]
+    var onComplete: ([UIImage]) -> Void = { _ in }
     var onError: (Error) -> Void = { _ in }
     var onCancel: () -> Void = {}
 
-    public init(scannedImages: Binding<[UIImage]>,
+    public init(onComplete: @escaping ([UIImage]) -> Void = { _ in },
                 onError: @escaping (Error) -> Void = { _ in },
                 onCancel: @escaping () -> Void = {}) {
-        self._scannedImages = scannedImages
+        self.onComplete = onComplete
         self.onError = onError
         self.onCancel = onCancel
     }
@@ -44,7 +52,12 @@ public struct DocumentScannerView: UIViewControllerRepresentable {
             for i in 0..<scan.pageCount {
                 imgs.append(scan.imageOfPage(at: i))
             }
-            parent.scannedImages = imgs
+            // 5d-scanner-fix: call onComplete synchronously here,
+            // BEFORE the sheet dismisses. The parent assigns these
+            // into its own @State right away and triggers the
+            // pipeline. No @Binding round-trip through a closing
+            // sheet.
+            parent.onComplete(imgs)
         }
 
         public func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {

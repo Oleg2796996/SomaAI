@@ -173,10 +173,24 @@ struct AddLabTestView: View {
                 ImagePicker(image: $capturedImage)
             }
             .sheet(isPresented: $isShowingScanner) {
-                DocumentScannerView(scannedImages: $scannedPages, onError: { err in
-                    apiError = err.localizedDescription
-                    showingErrorAlert = true
-                })
+                DocumentScannerView(
+                    onComplete: { imgs in
+                        // 5d-scanner-fix: capture images synchronously
+                        // here, BEFORE the sheet dismisses. The previous
+                        // @Binding-based design lost pages because the
+                        // sheet tears down before the binding write
+                        // propagates. We assign into @State directly and
+                        // kick off the same pipeline as .onChange did.
+                        scannedPages = imgs
+                        isShowingScanner = false
+                        Task { await handleScannedPages(imgs) }
+                    },
+                    onError: { err in
+                        apiError = err.localizedDescription
+                        showingErrorAlert = true
+                        isShowingScanner = false
+                    }
+                )
             }
             .onChange(of: scannedPages) { _, newValue in
                 if !newValue.isEmpty {
