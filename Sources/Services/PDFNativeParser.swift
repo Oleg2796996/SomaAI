@@ -153,151 +153,177 @@ enum PDFNativeParser {
         return PDFParseResult(markers: markers, patient: patient)
     }
 
-    // MARK: - Coordinate-based parser (5d-fifteenth)
 
-    /// Build coord-aware lines from a PDFPage. PDFKit's
-    /// `selectionsForLine()` returns one PDFSelection per visual line
-    /// (groups of fragments on the same Y). We further split each
-    /// selection by horizontal gaps to get separate words.
-    private static func coordLines(in page: PDFPage) -> [(y: CGFloat, frags: [(text: String, x: CGFloat)])] {
-        var out: [(y: CGFloat, frags: [(text: String, x: CGFloat)])] = []
-        for sel in page.selections(for: .line) {
-            let bounds = sel.bounds(for: page)
-            let y = bounds.origin.y
-            var fragments: [(text: String, x: CGFloat)] = []
-            for charSel in sel.selections(for: .character) {
-                let charBounds = charSel.bounds(for: page)
-                let c = charSel.string ?? ""
-                if c.isEmpty { continue }
-                if let last = fragments.last,
-                   abs(last.x - charBounds.origin.x) < 1.0 {
-                    fragments[fragments.count - 1] = (last.text + c, last.x)
-                } else {
-                    fragments.append((c, charBounds.origin.x))
-                }
-            }
-            if !fragments.isEmpty {
-                out.append((y: y, frags: fragments))
-            }
-        }
-        return out
-    }
+    // MARK: - Line-aware parser (5d-fifteenth-patch)
 
-    /// Group coord lines into rows (rows within `rowGap` of each
-    /// other share the same row). Returns rows top-to-bottom.
-    private static func groupRows(_ lines: [(y: CGFloat, frags: [(text: String, x: CGFloat)])], rowGap: CGFloat = 4) -> [[(text: String, x: CGFloat, y: CGFloat)]] {
-        guard !lines.isEmpty else { return [] }
-        // PDFKit's bounds(for: page) returns rect in page coords
-        // (origin at bottom-left). Visual "top" = higher Y. Sort
-        // DESCENDING by Y for top-to-bottom reading.
-        let sorted = lines.sorted { $0.y > $1.y }
-        var rows: [[(text: String, x: CGFloat, y: CGFloat)]] = []
-        for line in sorted {
-            let flat = line.frags.map { (text: $0.text, x: $0.x, y: line.y) }
-            if let last = rows.last, let prev = last.first,
-               abs(prev.y - line.y) <= rowGap {
-                rows[rows.count - 1].append(contentsOf: flat)
-            } else {
-                rows.append(flat)
-            }
-        }
-        return rows
-    }
-
-    /// Cluster a row's fragments into columns by horizontal gap.
-    private static func clusterColumns(frags: [(text: String, x: CGFloat, y: CGFloat)], gap: CGFloat = 10) -> [String] {
-        guard !frags.isEmpty else { return [] }
-        let sorted = frags.sorted { $0.x < $1.x }
-        var columns: [[(text: String, x: CGFloat)]] = [[sorted[0]]]
-        for f in sorted.dropFirst() {
-            let prev = columns[columns.count - 1].last!
-            if f.x - prev.x > gap {
-                columns.append([f])
-            } else {
-                columns[columns.count - 1].append(f)
-            }
-        }
-        return columns.map { $0.map { $0.text }.joined() }
-    }
-
-    /// Column-based table parser. Walks all PDFPages and extracts
-    /// markers by clustering text fragments into columns (separated
-    /// by horizontal gaps) and rows (separated by vertical gaps).
+    /// iOS PDFKit does NOT expose per-word or per-character
+    /// X-coordinates through public API. We have only
+    /// `selectionsForLine()` (one PDFSelection per visual line)
+    /// and `sel.bounds(for: page)` (the bounding box of the
+    /// whole line).
+    ///
+    /// Real PDFKit output (НКЦ2 моча, observed in logs):
+    ///   'Цвет соломенно -'
+    ///   'желтый'                         (continuation, lowercase)
+    ///   'соломенно -'                    (next row's name+value, lowercase!)
+    ///   'желтый'
+    ///   'Прозрачность прозрачная прозрачная'   (3 cols, single space)
+    ///   'Относительная плотность 1,027 1,008 - 1,025 г/мл повышено'  (5 cols)
+    ///   'Реакция 6 5 - 7,5'              (3 cols, name + 2 values)
+    ///
+    /// Strategy: walk all visual lines. For each line, decide if
+    /// it starts a NEW marker (first token is a Capitalized Name)
+    /// or CONTINUES the previous one (lowercase or digit first).
+    /// Within a marker line, split tokens and classify them into
+    /// value / range / unit / comment by shape.
     private static func parseTableByCoords(in pdf: PDFDocument,
-                                           pageRange: ClosedRange<Int>,
+                                           pageRange: Range<Int>,
                                            sectionHeader: String,
                                            debugName: String) -> [PDFMarker] {
         var markers: [PDFMarker] = []
         for pageIdx in pageRange {
             guard let page = pdf.page(at: pageIdx) else { continue }
-            let lines = coordLines(in: page)
-            let rows = groupRows(lines)
-            print("[SomaAI] coordParse[\(debugName).p\(pageIdx)]: \(rows.count) rows from \(lines.count) selections")
-            // Find the section header row.
+            // selectionsForLine is iOS 11+ public API. Returns
+            // one PDFSelection per visual line.
+            let lines: [String] = page.selectionsForLine()
+                .map { $0.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+                .filter { !$0.isEmpty }
+            print("[SomaAI] coordParse[\(debugName).p\(pageIdx)]: \(lines.count) visual lines from page")
+            // Find section header.
             var sectionStart: Int? = nil
-            for (idx, row) in rows.enumerated() {
-                let rowText = row.map { $0.text }.joined()
-                if rowText.contains(sectionHeader) {
-                    sectionStart = idx
-                    break
-                }
+            for (idx, l) in lines.enumerated() {
+                if l.contains(sectionHeader) { sectionStart = idx; break }
             }
-            guard let start = sectionStart else {
-                print("[SomaAI] coordParse[\(debugName).p\(pageIdx)]: section header '\(sectionHeader)' not found")
-                continue
-            }
-            // Skip column header rows (Показатель/Результат/Норма/...)
+            guard let start = sectionStart else { continue }
+            // Skip 1-3 column-header rows after the section header.
             var i = start + 1
             var skipped = 0
-            while i < rows.count && skipped < 3 {
-                let row = rows[i]
-                let cols = clusterColumns(frags: row)
-                let first = cols.first ?? ""
+            while i < lines.count && skipped < 3 {
+                let l = lines[i]
                 let isColumnHeader =
-                    first.contains("Показатель") ||
-                    first.contains("Результат") ||
-                    first == "Комментарий" ||
-                    first.isEmpty
+                    l.contains("Показатель") ||
+                    l.contains("Результат") ||
+                    l == "Комментарий"
                 if isColumnHeader { skipped += 1; i += 1; continue }
                 break
             }
-            // Parse markers.
-            while i < rows.count {
-                let row = rows[i]
-                let cols = clusterColumns(frags: row)
-                guard let first = cols.first else { i += 1; continue }
-                if sectionHeaders.contains(first) { break }
-                if stopLines.contains(first) { break }
-                if first.isEmpty || first.contains("Показатель") {
-                    i += 1; continue
+            // Walk lines. Each new line whose first token is a
+            // Capitalized Name starts a new row. Lines starting
+            // with a lowercase letter or digit are continuations.
+            while i < lines.count {
+                let l = lines[i]
+                if sectionHeaders.contains(l) { break }
+                if stopLines.contains(l) { break }
+                if l.isEmpty || l.contains("Показатель") { i += 1; continue }
+                // Section footers.
+                if l.hasPrefix("Анализы выполнены") || l.hasPrefix("Дата выдачи") ||
+                   l.hasPrefix("Подтвердил") || l.hasPrefix("Метод") ||
+                   l.hasPrefix("Исследование") {
+                    break
                 }
-                guard first.first?.isUppercase == true else { i += 1; continue }
-                guard first.count >= 3 else { i += 1; continue }
-                guard !isValue(first), !isUnit(first) else { i += 1; continue }
-                let name = first
-                let value = cols.count > 1 ? cols[1] : nil
-                let range = cols.count > 2 ? cols[2] : nil
+                // First non-empty token.
+                let firstTok = l.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? l
+                let firstTokTrimmed = firstTok.trimmingCharacters(in: .whitespaces)
+                let startsLower = firstTokTrimmed.first?.isLowercase == true
+                let startsDigit = firstTokTrimmed.first?.isNumber == true
+                let isNewRow =
+                    firstTokTrimmed.first?.isUppercase == true &&
+                    !isValue(firstTokTrimmed) &&
+                    !isUnit(firstTokTrimmed) &&
+                    firstTokTrimmed.count >= 3
+                if !isNewRow {
+                    // Continuation of previous marker.
+                    if let last = markers.last, startsLower {
+                        let prevVal = last.value ?? ""
+                        if prevVal.hasSuffix("-") || prevVal.hasSuffix(" -") {
+                            var newVal = prevVal
+                            while newVal.hasSuffix(" ") { newVal.removeLast() }
+                            while newVal.hasSuffix("-") { newVal.removeLast() }
+                            newVal += "-" + l
+                            markers[markers.count - 1] = PDFMarker(
+                                name: last.name,
+                                value: newVal,
+                                unit: last.unit,
+                                referenceRange: last.referenceRange,
+                                comment: last.comment
+                            )
+                        } else if !prevVal.isEmpty {
+                            markers[markers.count - 1] = PDFMarker(
+                                name: last.name,
+                                value: prevVal + " " + l,
+                                unit: last.unit,
+                                referenceRange: last.referenceRange,
+                                comment: last.comment
+                            )
+                        } else {
+                            // No value yet — this line is the value.
+                            markers[markers.count - 1] = PDFMarker(
+                                name: last.name,
+                                value: l,
+                                unit: last.unit,
+                                referenceRange: last.referenceRange,
+                                comment: last.comment
+                            )
+                        }
+                    } else if startsDigit, let last = markers.last, last.value == nil {
+                        markers[markers.count - 1] = PDFMarker(
+                            name: last.name,
+                            value: l,
+                            unit: last.unit,
+                            referenceRange: last.referenceRange,
+                            comment: last.comment
+                        )
+                    }
+                    i += 1
+                    continue
+                }
+                // Start a new marker. Tokenize and split into
+                // name (Capitalized words) + value tokens.
+                let tokens = l.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+                guard !tokens.isEmpty else { i += 1; continue }
+                var nameTokens: [String] = []
+                var valueTokens: [String] = []
+                var nameDone = false
+                for tok in tokens {
+                    if !nameDone {
+                        if tok.first?.isUppercase == true && !isValue(tok) && !isUnit(tok) {
+                            nameTokens.append(tok)
+                        } else {
+                            nameDone = true
+                            valueTokens.append(tok)
+                        }
+                    } else {
+                        valueTokens.append(tok)
+                    }
+                }
+                let name = nameTokens.joined(separator: " ")
+                if name.isEmpty { i += 1; continue }
+                // Classify value tokens: 1st=value, 2nd=range,
+                // 3rd=unit-or-comment, 4th=comment.
+                var value: String? = nil
+                var range: String? = nil
                 var unit: String? = nil
                 var comment: String? = nil
-                if cols.count > 3 {
-                    let c3 = cols[3]
-                    if isUnit(c3) { unit = c3 }
-                    else { comment = c3 }
+                if valueTokens.count >= 1 { value = valueTokens[0] }
+                if valueTokens.count >= 2 { range = valueTokens[1] }
+                if valueTokens.count >= 3 {
+                    let t = valueTokens[2]
+                    if isUnit(t) { unit = t }
+                    else { comment = t }
                 }
-                if cols.count > 4 { comment = cols[4] }
+                if valueTokens.count >= 4 { comment = valueTokens[3] }
                 markers.append(PDFMarker(
                     name: name,
-                    value: (value?.isEmpty == false) ? value : nil,
-                    unit: (unit?.isEmpty == false) ? unit : nil,
-                    referenceRange: (range?.isEmpty == false) ? range : nil,
-                    comment: (comment?.isEmpty == false) ? comment : nil
+                    value: value,
+                    unit: unit,
+                    referenceRange: range,
+                    comment: comment
                 ))
                 i += 1
             }
         }
         return markers
     }
-
     // MARK: - Patient
 
     private static func parsePatient(text: String) -> PDFPatientInfo {
