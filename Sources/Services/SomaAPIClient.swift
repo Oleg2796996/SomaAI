@@ -1422,24 +1422,29 @@ extension SomaAPIClient {
     /// "Normal", "High", or "Low". Returns nil if reference is missing
     /// or the value is not a number.
     static func computeFlag(value: String, reference: String?) -> String? {
-        // 5d-nineteenth: text-value rules (qualitative markers in
-        // urine/semen). Match in priority order:
-        //   - "negative" patterns  -> Normal
-        //   - "positive" patterns  -> High
-        //   - "absent" patterns    -> Normal
-        //   - "present" patterns   -> High (mostly pathological for
-        //     urine — bacteria, blood, sugar, protein etc.)
-        //   - "trace" patterns     -> Normal (small/trace is OK)
-        //   - morphological descriptors ('неизмененные',
-        //     'гиалиновые' in small count) -> Normal
+        // 5d-twentieth: re-ordered text rules. Trace patterns
+        // ('небольшое', 'единичные', 'немного', 'следы') MUST be
+        // checked BEFORE positive patterns, because 'небольшое'
+        // contains 'большое' as a substring. Also removed 'большое'
+        // from positive patterns — it's ambiguous and never used
+        // alone in lab reports.
         let valueLower = value.lowercased().trimmingCharacters(in: .whitespaces)
         let refLower = (reference ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        // 0. Trace / small / morphology patterns -> Normal
+        //    (must come FIRST so 'небольшое' doesn't match 'большое')
+        let tracePatterns = [
+            "небольшое", "единичные", "мало", "немного", "следы",
+            "trace", "small", "few", "гиалиновые", "неизмененные",
+            "прозрачная", "соломенно"
+        ]
+        for p in tracePatterns where valueLower.contains(p) || refLower.contains(p) {
+            return "Normal"
+        }
         // 1. Negative / absence patterns -> Normal
         let negativePatterns = [
             "отрицательно", "отсутствуют", "не обнаружено", "не обнаружен",
             "не выявлено", "не найдено", "нет", "негативно", "negative",
-            "neg", "absent", "not detected", "неизмененные",
-            "прозрачная", "соломенно"
+            "neg", "absent", "not detected"
         ]
         for p in negativePatterns where valueLower.contains(p) || refLower.contains(p) {
             return "Normal"
@@ -1448,43 +1453,53 @@ extension SomaAPIClient {
         let positivePatterns = [
             "положительно", "обнаружено", "обнаружен", "выявлено",
             "присутствуют", "есть", "позитивно", "positive", "pos",
-            "detected", "present", "большое", "значительное"
+            "detected", "present", "значительное"
         ]
         for p in positivePatterns where valueLower.contains(p) {
             return "High"
         }
-        // 3. "small/trace/единичные" patterns -> mostly Normal
-        let tracePatterns = [
-            "небольшое", "единичные", "мало", "немного", "следы",
-            "trace", "small", "few", "гиалиновые"
-        ]
-        for p in tracePatterns where valueLower.contains(p) {
-            return "Normal"
-        }
-        // 4. Now try numeric path
+        // 3. Now try numeric path
         guard let reference = reference, !reference.isEmpty else { return nil }
+        // 5d-twentieth: extract first number from value. PDFKit
+        // continuation merge sometimes yields '0,6
+        // микроальбуминурия; макроальбуминурия' (alpha). The number
+        // is the real value — parse with regex.
+        let extractedNum = Self.extractFirstNumber(from: value)
+        guard let num = extractedNum else { return nil }
         // 5d-nineteenth: handle value="0-1" with range="0,00 - 3,00".
         // PDFKit sometimes emits small integer ranges as values.
         // If value looks like a tiny range (A - B where A and B are
         // numbers and B < 100), pick the larger endpoint.
-        let valueNormForRangeCheck = value.replacingOccurrences(of: ",", with: ".")
-        let valueParts = valueNormForRangeCheck
+        if num < 0 || num > 100000 { return nil }  // sanity
+        return computeFlagForNumber(num: num, reference: reference)
+    }
+
+    /// 5d-twentieth: extract first decimal/integer from a string
+    /// (handles '0,6 микроальбуминурия; макроальбуминурия' -> 0.6).
+    /// Returns nil if no number found.
+    private static func extractFirstNumber(from s: String) -> Double? {
+        let normalized = s.replacingOccurrences(of: ",", with: ".")
+        let pattern = #"-?\d+(?:\.\d+)?"#
+        if let re = try? NSRegularExpression(pattern: pattern) {
+            let ns = normalized as NSString
+            let range = NSRange(location: 0, length: ns.length)
+            if let m = re.firstMatch(in: normalized, range: range) {
+                let str = ns.substring(with: m.range)
+                return Double(str)
+            }
+        }
+        // Fallback: maybe value is itself a range "0-1" with no spaces.
+        let dashParts = normalized
             .replacingOccurrences(of: "–", with: "-")
             .replacingOccurrences(of: "—", with: "-")
             .components(separatedBy: "-")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-        if valueParts.count == 2,
-           let v0 = Double(valueParts[0]), let v1 = Double(valueParts[1]),
+        if dashParts.count == 2,
+           let v0 = Double(dashParts[0]), let v1 = Double(dashParts[1]),
            v0 >= 0, v1 >= 0, v1 < 100 {
-            // Use the max endpoint (the observation, not the bracket)
-            let effectiveValue = max(v0, v1)
-            return computeFlagForNumber(
-                num: effectiveValue, reference: reference
-            )
+            return max(v0, v1)
         }
-        let normalizedValue = value.replacingOccurrences(of: ",", with: ".")
-        guard let num = Double(normalizedValue) else { return nil }
-        return computeFlagForNumber(num: num, reference: reference)
+        return Double(normalized)
     }
 
     /// 5d-nineteenth: extracted numeric flag computation
