@@ -686,6 +686,31 @@ final class SomaAPIClient {
         let meds = (extraction.medications?.isEmpty == false) ? extraction.medications : nil
         let secs = (extraction.sections?.isEmpty == false) ? extraction.sections : nil
         var marks = (deduped?.isEmpty == false) ? deduped : nil
+        // 5d-scan-range: postprocess — for every marker with empty
+        // referenceRange but a non-empty value, try to recover the
+        // range from the source text. Common in scan OCR where the
+        // LLM dropped the range column (e.g. "Реакция 6 5-7,5" came
+        // back as name="Реакция" value="6" referenceRange=null).
+        // We look for "<name> <value> <range>" patterns in rawText.
+        if let marks = marks {
+            var patched: [SomaExtractionResponse.MarkerEntry] = []
+            for m in marks {
+                var copy = m
+                if (copy.referenceRange?.isEmpty ?? true) && !(copy.value?.isEmpty ?? true) {
+                    if let recovered = Self.recoverRangeFromRawText(
+                        name: copy.name, value: copy.value ?? "", rawText: text
+                    ) {
+                        copy.referenceRange = recovered.range
+                        if (copy.unit?.isEmpty ?? true) {
+                            copy.unit = recovered.unit
+                        }
+                        print("[SomaAI] 5d-scan-range: recovered '\(copy.name)' ref='\(recovered.range)' unit='\(recovered.unit ?? "nil")'")
+                    }
+                }
+                patched.append(copy)
+            }
+            marks = patched
+        }
         // 5. Type override: smartClassify is the source of truth.
         //    LLM often confuses 'Эпикриз выписной' (dischargeSummary)
         //    with 'Эпикриз' (epicrisis) in the extract step, even when
@@ -1026,6 +1051,12 @@ Rules:
 - Scan the whole OCR text (it may be a long document).
 - Output ≤2000 characters of valid JSON. No markdown, no prose, no comments.
 - Use Russian for names when the document is in Russian.
+
+CRITICAL (5d-scan-range) — every marker MUST carry unit and referenceRange when present in the source text:
+  - If the source row has format "<name> <value> <range> <unit>" or "<name> <value> <unit> <range>", do NOT drop range or unit even if other rows omit them.
+  - For OCR-merged rows where the table column header was lost (e.g. "Реакция 6 5-7,5" with no unit visible), INFER unit from the section's dominant unit (e.g. for "Физико-химические свойства" urine analysis the pH-like markers have no unit, density has "г/мл", biochem has "ммоль/л"). Use null only when truly absent.
+  - If range is present anywhere on the same logical row (including a "норма" column or a nearby line that begins with the same marker name), capture it. Do not leave referenceRange empty when the source shows numbers like "5-7,5" or "0 - 1".
+  - For text-only markers (Цвет, Прозрачность, Слизь, Бактерии) where value is a word and reference is also a word ("соломенно-желтый" / "соломенно-желтый"), set referenceRange = "value repeated" so the flag evaluator can match equality.
 """
 
     static let consultantSystem = """
@@ -1577,6 +1608,54 @@ extension SomaAPIClient {
                 .replacingOccurrences(of: "≥", with: "")
                 .trimmingCharacters(in: .whitespaces)
             if let lim = Double(limStr) { return num > lim ? "Normal" : "Low" }
+        }
+        return nil
+    }
+
+    // 5d-scan-range: recover referenceRange (and unit) for a marker
+    // whose extraction came back without them. Scans the raw OCR
+    // text for "<name> <value> <range> [unit]" patterns and pulls
+    // the closest match. Returns nil if no confident recovery.
+    static func recoverRangeFromRawText(
+        name: String,
+        value: String,
+        rawText: String
+    ) -> (range: String, unit: String?)? {
+        // Escape the name for regex (dots, slashes, backslashes, parens).
+        let nameEscaped = NSRegularExpression.escapedPattern(for: name)
+        // Try several value forms: as-is, with comma->dot decimal, with
+        // spaces stripped. Many lab values are written both ways in OCR.
+        let v = value.trimmingCharacters(in: .whitespaces)
+        let vAlt = v.replacingOccurrences(of: ",", with: ".")
+        let vAltNoSpace = v.replacingOccurrences(of: " ", with: "")
+        let candidates = [v, vAlt, vAltNoSpace].filter { !$0.isEmpty }
+        // Pattern: <name> <value> <range> [unit]
+        // range = "<num>" or "<num> - <num>" (en-dash, em-dash, hyphen)
+        // unit  = letters/cyrillic/%/slash (one token)
+        // Must be at line start OR after whitespace, name not glued to other word.
+        for cand in candidates {
+            let pattern = "(?:^|\\s|\\n)\(nameEscaped)\\s+\(NSRegularExpression.escapedPattern(for: cand))\\s+(-?\\d+(?:[.,]\\d+)?\\s*[-—–]\\s*\\d+(?:[.,]\\d+)?|<\\s*\\d+(?:[.,]\\d+)?|>-?\\s*\\d+(?:[.,]\\d+)?|\\d+(?:[.,]\\d+)?)(?:\\s+([\\p{L}%/]+))?"
+            if let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let range = NSRange(rawText.startIndex..., in: rawText)
+                if let m = re.firstMatch(in: rawText, range: range) {
+                    if let r = Range(m.range(at: 1), in: rawText) {
+                        let rangeStr = String(rawText[r]).trimmingCharacters(in: .whitespaces)
+                            .replacingOccurrences(of: "—", with: "-")
+                            .replacingOccurrences(of: "–", with: "-")
+                        var unit: String? = nil
+                        if m.numberOfRanges > 2, m.range(at: 2).location != NSNotFound,
+                           let u = Range(m.range(at: 2), in: rawText) {
+                            let uStr = String(rawText[u]).trimmingCharacters(in: .whitespaces)
+                            if uStr.count <= 12 && uStr.count >= 1 {
+                                unit = uStr
+                            }
+                        }
+                        if !rangeStr.isEmpty {
+                            return (rangeStr, unit)
+                        }
+                    }
+                }
+            }
         }
         return nil
     }
