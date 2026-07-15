@@ -111,13 +111,20 @@ enum PDFNativeParser {
             let k = (m.name.lowercased()) + "|" + (m.value ?? "").lowercased()
             return seen.insert(k).inserted
         }
+        // 5d-scan-regex-first-fix: drop markers with no value AND no
+        // range (footer/header leaks that started with a capital
+        // Cyrillic letter and slipped past isMarkerName).
+        all = all.filter { m in
+            let hasValue = !(m.value?.isEmpty ?? true)
+            let hasRange = !(m.range?.isEmpty ?? true)
+            let hasName  = !m.name.isEmpty
+            return hasName && (hasValue || hasRange)
+        }
         if all.count < 5 {
             print("[SomaAI] PDFNativeParser(text): only \(all.count) markers (need >=5) — falling back to LLM")
             return nil
         }
         print("[SomaAI] PDFNativeParser(text): recovered \(all.count) markers (physchem=\(physchem.count) micro=\(micro.count))")
-        let patient = parsePatient(text: cleaned)
-        return PDFParseResult(markers: all, patient: patient)
     }
 
     static func parse(pdf: PDFDocument) -> PDFParseResult? {
@@ -257,10 +264,14 @@ enum PDFNativeParser {
                 if sectionHeaders.contains(l) { break }
                 if stopLines.contains(l) { break }
                 if l.isEmpty || l.contains("Показатель") { i += 1; continue }
-                // Section footers.
-                if l.hasPrefix("Анализы выполнены") || l.hasPrefix("Дата выдачи") ||
-                   l.hasPrefix("Подтвердил") || l.hasPrefix("Метод") ||
-                   l.hasPrefix("Исследование") {
+                // Section footers. 5d-scan-regex-first-fix: use
+                // lowercased + contains for "оборудовани" so OCR
+                // variants like "Анализы выполненн" still match.
+                let lLower = l.lowercased()
+                if lLower.hasPrefix("анализы выполнены") || lLower.hasPrefix("анализы выполнен") ||
+                   lLower.contains("оборудовани") || lLower.hasPrefix("дата выдачи") ||
+                   lLower.hasPrefix("подтвердил") || lLower.hasPrefix("метод") ||
+                   lLower.hasPrefix("исследование выполнено") {
                     break
                 }
                 let firstTok = l.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? l

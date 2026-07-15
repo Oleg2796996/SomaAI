@@ -516,6 +516,16 @@ struct AddLabTestView: View {
             if let parsed = PDFNativeParser.parse(text: result.text), parsed.markers.count >= 5 {
                 print("[SomaAI] 5d-scan-regex-first: recovered \(parsed.markers.count) markers from OCR text (skipping LLM extract)")
                 self.pdfNativeMarkers = parsed.markers
+                // 5d-scan-regex-first-fix: also extract the date from
+                // the OCR text so the short-circuit at line 452 can
+                // set date != today. LocalExtractor handles Russian
+                // month names + numeric formats.
+                if let pdfDate = LocalExtractor.extractBestDate(result.text), !pdfDate.isEmpty {
+                    print("[SomaAI] 5d-scan-regex-first-fix: date extracted from OCR text: \(pdfDate)")
+                    self.pdfNativeDate = pdfDate
+                } else {
+                    self.pdfNativeDate = nil
+                }
                 if testName.trimmingCharacters(in: .whitespaces).isEmpty,
                    let name = parsed.patient.fullName, !name.isEmpty {
                     testName = "Анализ от \(name)"
@@ -526,6 +536,7 @@ struct AddLabTestView: View {
                 }
             } else {
                 self.pdfNativeMarkers = nil
+                self.pdfNativeDate = nil
             }
         }
     }
