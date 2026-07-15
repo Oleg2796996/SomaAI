@@ -229,7 +229,7 @@ final class SomaAPIClient {
                     let classification = try await self.smartClassify(body)
                     let docType = DocumentType(rawValue: classification.type) ?? .unknown
                     let extraction = try await self.extractDocument(body, type: docType)
-                    return self.validate(extraction: extraction, classification: classification, expectedType: docType)
+                    return self.validate(extraction: extraction, classification: classification, expectedType: docType, rawText: body)
                 } catch {
                     print("[SomaAI] processDocument inner catch: \(error.localizedDescription) — trying LocalExtractor")
                     // Try local regex before falling back to raw text.
@@ -669,7 +669,7 @@ final class SomaAPIClient {
     /// Deterministic validation: removes duplicate markers, clamps
     /// confidence, picks the better organisation between classify and
     /// extract outputs, and defaults empty `markers` arrays to nil.
-    private func validate(extraction: SomaExtractionResponse, classification: SomaClassifyResponse, expectedType: DocumentType) -> SomaExtractionResponse {
+    private func validate(extraction: SomaExtractionResponse, classification: SomaClassifyResponse, expectedType: DocumentType, rawText: String) -> SomaExtractionResponse {
         // 1. Deduplicate markers by name+value
         var seen = Set<String>()
         let deduped = extraction.markers?.filter { m in
@@ -692,16 +692,18 @@ final class SomaAPIClient {
         // LLM dropped the range column (e.g. "Реакция 6 5-7,5" came
         // back as name="Реакция" value="6" referenceRange=null).
         // We look for "<name> <value> <range>" patterns in rawText.
-        if let marks = marks {
-            var patched: [SomaExtractionResponse.MarkerEntry] = []
-            for m in marks {
+        if let marksIn = marks {
+            var patched: [SomaMarker] = []
+            for m in marksIn {
                 var copy = m
-                if (copy.referenceRange?.isEmpty ?? true) && !(copy.value?.isEmpty ?? true) {
-                    if let recovered = Self.recoverRangeFromRawText(
-                        name: copy.name, value: copy.value ?? "", rawText: text
+                let refEmpty = (copy.referenceRange ?? "").isEmpty
+                let valEmpty = copy.value.isEmpty
+                if refEmpty && !valEmpty {
+                    if let recovered = SomaAPIClient.recoverRangeFromRawText(
+                        name: copy.name, value: copy.value, rawText: rawText
                     ) {
                         copy.referenceRange = recovered.range
-                        if (copy.unit?.isEmpty ?? true) {
+                        if (copy.unit ?? "").isEmpty {
                             copy.unit = recovered.unit
                         }
                         print("[SomaAI] 5d-scan-range: recovered '\(copy.name)' ref='\(recovered.range)' unit='\(recovered.unit ?? "nil")'")
