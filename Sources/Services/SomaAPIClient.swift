@@ -359,6 +359,18 @@ final class SomaAPIClient {
                     )
                 }
             }
+            // 5d-fix-classify-extended: also promote when LLM said
+            // unknown with mid confidence (0.0–0.5). Lab tables
+            // (показатель/результат/норма) often confuse the LLM
+            // because they look generic. We trust the regex hint
+            // at full strength here because we already have multiple
+            // table-header patterns matching.
+            if vote.type == DocumentType.unknown.rawValue && vote.confidence <= 0.5 {
+                if let labHint = self.regexClassify(text), labHint.type == DocumentType.labResult.rawValue {
+                    print("[SomaAI] smartClassify: LLM said unknown@\(vote.confidence) but labHint → promoting to labResult@\(labHint.confidence)")
+                    return labHint
+                }
+            }
             return vote
         }
         print("[SomaAI] smartClassify: LLM timed out/failed → returning unknown@0.4 (user can re-type)")
@@ -433,6 +445,20 @@ final class SomaAPIClient {
             ("гистологическое исследование",        DocumentType.labResult.rawValue, 0.90),
             ("cbc",                                 DocumentType.labResult.rawValue, 0.85),
             ("lipid panel",                         DocumentType.labResult.rawValue, 0.85),
+            // 5d-fix-classify-extended: scan OCR often drops or mangles
+            // the lab header (Виталс/НКЦ2 forms use a banner that's
+            // easy to misread) but the table column headers survive.
+            // If we see the standard lab table column header, treat it
+            // as a lab result even without the 'клинико-диагностическая'
+            // banner. Conf is 0.80 (slightly lower than the banner match
+            // so banner still wins if both are present).
+            ("показатель результат норма единицы",   DocumentType.labResult.rawValue, 0.80),
+            ("показатель результат ед\\. изм\\.",   DocumentType.labResult.rawValue, 0.80),
+            ("показатель\\s+результат\\s+норма",    DocumentType.labResult.rawValue, 0.80),
+            ("таблица результатов",                 DocumentType.labResult.rawValue, 0.75),
+            ("физико-химические свойства",          DocumentType.labResult.rawValue, 0.75),
+            ("микроскопическое исследование",       DocumentType.labResult.rawValue, 0.75),
+            ("микроскопия осадка",                  DocumentType.labResult.rawValue, 0.70),
         ]
         for (pattern, type, conf) in rules {
             if lower.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
