@@ -875,6 +875,15 @@ final class SomaAPIClient {
 
     /// Sends a user health question with filtered local context.
     func askConsultant(_ question: String, context: [String: String] = [:], language: String = "English") async throws -> String {
+        // 5d-twenty-third (DIAG): log the context size so we can
+        // see whether buildContextFragments returned 26 markers
+        // (Sprint 4.7ao-pdf) or just 1 (the bug Oleg reported).
+        print("[SomaAI] askConsultant: question='\(question.prefix(80))' contextCount=\(context.count)")
+        if context.count <= 3 {
+            for (k, v) in context {
+                print("[SomaAI]   context[\(k)] = \(v.prefix(120))")
+            }
+        }
         guard !apiKey.isEmpty else {
             throw SomaAPIError.noAPIKey
         }
