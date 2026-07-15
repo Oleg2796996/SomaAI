@@ -302,8 +302,29 @@ enum PDFNativeParser {
                         valueTokens.append(tok)
                     }
                 }
-                let name = nameTokens.joined(separator: " ")
+                var name = nameTokens.joined(separator: " ")
                 if name.isEmpty { i += 1; continue }
+                // 5d-seventeenth: multi-word names like
+                // 'Кетоновые тела', 'Реакция на кровь', 'Клетки
+                // плоского эпителия', 'Неорганиз. осадок мочи
+                // (соли)', 'Лейкоцитарная эстераза',
+                // 'Альбумин/Креатинин' have 2+ capitalized
+                // words. The line-aware logic correctly puts both
+                // in nameTokens, but ONLY when the first value
+                // token is actually a value (not another name word).
+                // E.g. 'Кетоновые тела 0 0 - 0,1' — 'Кетоновые' +
+                // 'тела' are both capitalized, but 'тела' is
+                // mis-classified as value because it has no digits.
+                // We expand the name from a known alias list.
+                if let expanded = expandMultiWordName(nameTokens: nameTokens, valueTokens: valueTokens) {
+                    name = expanded.name
+                    // valueTokens may have been shortened: the
+                    // tokens absorbed into the name should be
+                    // removed from valueTokens.
+                    if expanded.absorbedCount > 0 {
+                        valueTokens = Array(valueTokens.dropFirst(expanded.absorbedCount))
+                    }
+                }
                 // Classify value tokens: 1st=value, 2nd=range,
                 // 3rd=unit-or-comment, 4th=comment.
                 var value: String? = nil
@@ -318,6 +339,37 @@ enum PDFNativeParser {
                     else { comment = t }
                 }
                 if valueTokens.count >= 4 { comment = valueTokens[3] }
+                // 5d-seventeenth: handle range with literal hyphen.
+                // '5' + '-' + '7,5' (PDFKit may split '5 - 7,5'
+                // into 3 separate tokens). Glue them back into
+                // '5 - 7,5'.
+                if valueTokens.count >= 3,
+                   let v0 = valueTokens.first, isValue(v0),
+                   let v1 = valueTokens.dropFirst().first,
+                   v1 == "-" || v1 == "—" || v1 == "–" {
+                    let v2 = valueTokens[2]
+                    range = "\(v0) - \(v2)"
+                    // Shift everything else by 2: tokens[3..] become
+                    // unit-or-comment.
+                    if valueTokens.count >= 4 {
+                        let t = valueTokens[3]
+                        if isUnit(t) { unit = t }
+                        else { comment = t }
+                    }
+                    if valueTokens.count >= 5 { comment = valueTokens[4] }
+                }
+                // 5d-seventeenth: de-dup value. PDFKit sometimes
+                // repeats the same phrase twice ('соломенно-желтый
+                // соломенно-желтый'). Detect by value containing
+                // itself as a substring.
+                if let v = value, v.count > 5 {
+                    let mid = v.index(v.startIndex, offsetBy: v.count / 2)
+                    let first = String(v[..<mid]).trimmingCharacters(in: .whitespaces)
+                    let second = String(v[mid...]).trimmingCharacters(in: .whitespaces)
+                    if !first.isEmpty && first == second {
+                        value = first
+                    }
+                }
                 markers.append(PDFMarker(
                     name: name,
                     value: value,
@@ -329,6 +381,60 @@ enum PDFNativeParser {
             }
         }
         return markers
+    }
+
+    // MARK: - Multi-word name expansion (5d-seventeenth)
+
+    /// Known multi-word marker names. Maps the FULL name to the
+    /// count of tokens that the name occupies. The parser checks
+    /// each entry: if `nameTokens` starts with the prefix, expand.
+    private static let multiWordNames: [String] = [
+        "Кетоновые тела",
+        "Реакция на кровь",
+        "Клетки плоского эпителия",
+        "Клетки переходного эпителия",
+        "Клетки почечного эпителия",
+        "Неорганиз. осадок мочи (соли)",
+        "Неорганический осадок мочи",
+        "Лейкоцитарная эстераза",
+        "Альбумин/Креатинин",
+        "Альбумин/Креатининовый индекс",
+        "Относительная плотность",
+        "Дрожжеподобные грибы",
+    ]
+
+    /// Try to expand a partial name. Given `nameTokens` and the
+    /// full token list after the first non-name token, see if any
+    /// entry in `multiWordNames` matches `nameTokens + valueTokens[..n]`.
+    /// Returns the expanded name and the count of valueTokens
+    /// absorbed into the name.
+    private static func expandMultiWordName(
+        nameTokens: [String],
+        valueTokens: [String]
+    ) -> (name: String, absorbedCount: Int)? {
+        // For each known multi-word name, check whether its prefix
+        // matches `nameTokens`. The first N tokens of the entry
+        // must equal `nameTokens`. Then the remaining M tokens
+        // of the entry must equal the first M tokens of
+        // `valueTokens`. If so, the expanded name absorbs the
+        // first M valueTokens.
+        for entry in multiWordNames {
+            let entryTokens = entry.split(separator: " ").map(String.init)
+            guard entryTokens.count >= 2 else { continue }
+            guard entryTokens.count > nameTokens.count else { continue }
+            // Check that `nameTokens` matches the entry's first
+            // `nameTokens.count` tokens.
+            let namePrefix = Array(entryTokens.prefix(nameTokens.count))
+            guard namePrefix == nameTokens else { continue }
+            // The remaining entry tokens need to match valueTokens.
+            let remaining = Array(entryTokens.dropFirst(nameTokens.count))
+            guard remaining.count <= valueTokens.count else { continue }
+            for (i, t) in remaining.enumerated() {
+                if valueTokens[i] != t { return nil }
+            }
+            return (name: entry, absorbedCount: remaining.count)
+        }
+        return nil
     }
     // MARK: - Patient
 
