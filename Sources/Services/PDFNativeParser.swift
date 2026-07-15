@@ -90,7 +90,8 @@ enum PDFNativeParser {
     static func parse(pdf: PDFDocument) -> PDFParseResult? {
         // iOS PDFKit may use \r, \n, or \r\n as line separators.
         // Normalise to \n first.
-        guard let raw = pdf.string, raw.count > 200 else {
+        let raw = pdf.string
+        guard let raw, raw.count > 200 else {
             print("[SomaAI] PDFNativeParser: text too short or nil (\(raw?.count ?? 0) chars)")
             return nil
         }
