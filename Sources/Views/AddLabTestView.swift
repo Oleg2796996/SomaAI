@@ -568,7 +568,11 @@ struct AddLabTestView: View {
                         value: m.value ?? "—",
                         unit: m.unit,
                         referenceRange: m.referenceRange,
-                        flag: SomaAPIClient.computeFlag(value: m.value ?? "—", reference: m.referenceRange)
+                        flag: SomaAPIClient.computeFlag(
+                            value: m.value ?? "—",
+                            reference: m.referenceRange,
+                            name: m.name
+                        )
                     )
                 }
                 pendingMedications = []

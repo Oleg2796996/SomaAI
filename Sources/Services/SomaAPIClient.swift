@@ -715,7 +715,7 @@ final class SomaAPIClient {
                 // computeFlag needs a fresh shot to produce Normal/High/Low.
                 let numeric = Self.extractFirstNumber(from: copy.value)
                 if let n = numeric, !(copy.referenceRange ?? "").isEmpty {
-                    if let f = Self.computeFlag(value: copy.value, reference: copy.referenceRange) {
+                    if let f = Self.computeFlag(value: copy.value, reference: copy.referenceRange, name: copy.name) {
                         if copy.flag != f {
                             print("[SomaAI] 5d-scan-range: flag recomputed '\(copy.name)' \(copy.flag ?? "nil") -> \(f) (n=\(n), ref=\(copy.referenceRange ?? "nil"))")
                             copy.flag = f
@@ -833,7 +833,10 @@ final class SomaAPIClient {
             }
             // If there's still a trailing ") (норма: ...)" we missed,
             // strip it from value.
-            let flag = Self.computeFlag(value: value, reference: reference)
+            // 5d-twenty-seventh: pass `name` so trace/negative/positive
+            // pattern checks can also look at marker name (fixes
+            // "Цилиндры гиалиновые" etc).
+            let flag = Self.computeFlag(value: value, reference: reference, name: s.key)
             out.append(SomaMarker(
                 name: s.key,
                 value: value,
@@ -1471,7 +1474,9 @@ extension SomaAPIClient {
             // UI can color markers even when LLM JSON decode failed. We
             // parse "4,2 - 5,6" / "< 5,6" / "> 10" / "0,0 - 1,0" patterns
             // and compare the numeric value.
-            let flag = Self.computeFlag(value: value, reference: range)
+            // 5d-twenty-seventh: pass `name` so trace/negative/positive
+            // pattern checks can also look at marker name.
+            let flag = Self.computeFlag(value: value, reference: range, name: name)
             markers.append(SomaMarker(
                 name: name, value: value, unit: unit,
                 referenceRange: range, flag: flag
@@ -1502,7 +1507,17 @@ extension SomaAPIClient {
     /// "< 5,6" or "> 10" and compare against a numeric value. Returns
     /// "Normal", "High", or "Low". Returns nil if reference is missing
     /// or the value is not a number.
-    static func computeFlag(value: String, reference: String?) -> String? {
+    ///
+    /// Sprint 5d-twenty-seventh: added `name` parameter (with default
+    /// `""` for backward compatibility) so trace/negative/positive
+    /// pattern checks also look at the marker name. Fixes markers
+    /// like "Цилиндры гиалиновые" whose value is truncated to
+    /// "в пре..." (в препарате) by UI — the word "гиалиновые" lives
+    /// in `name`, not in `value`. Also added handling for value-only
+    /// micro-ranges ("0-0,1", "0-1", "0-70") where reference is
+    /// missing — these are inherently normal (typical thresholds
+    /// like "negative" / "trace" written as a range from 0).
+    static func computeFlag(value: String, reference: String?, name: String = "") -> String? {
         // 5d-twentieth: re-ordered text rules. Trace patterns
         // ('небольшое', 'единичные', 'немного', 'следы') MUST be
         // checked BEFORE positive patterns, because 'небольшое'
@@ -1511,23 +1526,33 @@ extension SomaAPIClient {
         // alone in lab reports.
         let valueLower = value.lowercased().trimmingCharacters(in: .whitespaces)
         let refLower = (reference ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+        let nameLower = name.lowercased().trimmingCharacters(in: .whitespaces)
         // 0. Trace / small / morphology patterns -> Normal
         //    (must come FIRST so 'небольшое' doesn't match 'большое')
+        //    5d-twenty-seventh: also check `name` so markers like
+        //    "Цилиндры гиалиновые" with truncated value still match.
+        //    Also added "в пре", "в поле зр", "в п/з" — UI-truncated
+        //    values for "в препарате" / "в поле зрения".
         let tracePatterns = [
             "небольшое", "единичные", "мало", "немного", "следы",
             "trace", "small", "few", "гиалиновые", "неизмененные",
-            "прозрачная", "соломенно"
+            "прозрачная", "соломенно",
+            "в пре", "в препарате", "в поле зр", "в п/з", "в п/зр"
         ]
-        for p in tracePatterns where valueLower.contains(p) || refLower.contains(p) {
+        for p in tracePatterns where
+            valueLower.contains(p) || refLower.contains(p) || nameLower.contains(p) {
             return "Normal"
         }
         // 1. Negative / absence patterns -> Normal
+        //    5d-twenty-seventh: also check `name` (e.g. "Сперматозоиды"
+        //    when value is empty/garbled but name clearly says "absent").
         let negativePatterns = [
             "отрицательно", "отсутствуют", "не обнаружено", "не обнаружен",
             "не выявлено", "не найдено", "нет", "негативно", "negative",
             "neg", "absent", "not detected"
         ]
-        for p in negativePatterns where valueLower.contains(p) || refLower.contains(p) {
+        for p in negativePatterns where
+            valueLower.contains(p) || refLower.contains(p) || nameLower.contains(p) {
             return "Normal"
         }
         // 2. Positive / present patterns -> High
@@ -1536,15 +1561,29 @@ extension SomaAPIClient {
         // continuation merge ('не кол-во в поле зр.') but range
         // is the meaningful word ('обнаружено'), we need to look
         // at the range too.
+        // 5d-twenty-seventh: also check `name` for the same reason.
         let positivePatterns = [
             "положительно", "обнаружено", "обнаружен", "выявлено",
             "присутствуют", "есть", "позитивно", "positive", "pos",
             "detected", "present", "значительное"
         ]
-        for p in positivePatterns where valueLower.contains(p) || refLower.contains(p) {
+        for p in positivePatterns where
+            valueLower.contains(p) || refLower.contains(p) || nameLower.contains(p) {
             return "High"
         }
-        // 3. Now try numeric path
+        // 3. 5d-twenty-seventh: value-only micro-range fallback.
+        //    If value looks like "A - B" (both numbers, A >= 0,
+        //    B < 100) and reference is missing/empty, the marker
+        //    is inherently within a low threshold — these are
+        //    normal-range indicators (e.g. "Кетоновые тела 0-0,5",
+        //    "Лейкоцитарная эстераза 0-70"). Return Normal.
+        if (reference ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+            if let _ = Self.parseValueRange(value) {
+                return "Normal"
+            }
+            return nil
+        }
+        // 4. Now try numeric path
         guard let reference = reference, !reference.isEmpty else { return nil }
         // 5d-twentieth: extract first number from value. PDFKit
         // continuation merge sometimes yields '0,6
@@ -1558,6 +1597,22 @@ extension SomaAPIClient {
         // numbers and B < 100), pick the larger endpoint.
         if num < 0 || num > 100000 { return nil }  // sanity
         return computeFlagForNumber(num: num, reference: reference)
+    }
+
+    /// 5d-twenty-seventh: parse a value-only micro-range like
+    /// "0 - 0,1", "0-1", "0,5 - 5,0". Returns (low, high) if both
+    /// are valid non-negative numbers with high < 100, else nil.
+    private static func parseValueRange(_ s: String) -> (low: Double, high: Double)? {
+        let normalized = s
+            .replacingOccurrences(of: ",", with: ".")
+            .replacingOccurrences(of: "–", with: "-")
+            .replacingOccurrences(of: "—", with: "-")
+        let parts = normalized.components(separatedBy: "-")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 2 else { return nil }
+        guard let v0 = Double(parts[0]), let v1 = Double(parts[1]) else { return nil }
+        guard v0 >= 0, v1 >= 0, v1 < 100, v0 <= v1 else { return nil }
+        return (v0, v1)
     }
 
     /// 5d-twentieth: extract first decimal/integer from a string
