@@ -125,6 +125,8 @@ enum PDFNativeParser {
             return nil
         }
         print("[SomaAI] PDFNativeParser(text): recovered \(all.count) markers (physchem=\(physchem.count) micro=\(micro.count))")
+        let patient = parsePatient(text: cleaned)
+        return PDFParseResult(markers: all, patient: patient)
     }
 
     static func parse(pdf: PDFDocument) -> PDFParseResult? {
@@ -168,11 +170,11 @@ enum PDFNativeParser {
                                       debugName: "micro")
         print("[SomaAI] PDFNativeParser(coord): Физико-химические = \(m1c.count) markers")
         for (i, m) in m1c.enumerated() {
-            print("[SomaAI]   physchem[\(i)]: name='\(m.name ?? "")' value='\(m.value ?? "")' range='\(m.referenceRange ?? "")' unit='\(m.unit ?? "")' comment='\(m.comment ?? "")'")
+            print("[SomaAI]   physchem[\(i)]: name='\(m.name)' value='\(m.value ?? "")' range='\(m.referenceRange ?? "")' unit='\(m.unit ?? "")' comment='\(m.comment ?? "")'")
         }
         print("[SomaAI] PDFNativeParser(coord): Микроскопическое = \(m2c.count) markers")
         for (i, m) in m2c.enumerated() {
-            print("[SomaAI]   micro[\(i)]: name='\(m.name ?? "")' value='\(m.value ?? "")' range='\(m.referenceRange ?? "")' unit='\(m.unit ?? "")' comment='\(m.comment ?? "")'")
+            print("[SomaAI]   micro[\(i)]: name='\(m.name)' value='\(m.value ?? "")' range='\(m.referenceRange ?? "")' unit='\(m.unit ?? "")' comment='\(m.comment ?? "")'")
         }
         // Use coord-based result if it's at least as good as the
         // line-based one. If coord-based is much worse (e.g. 0),
