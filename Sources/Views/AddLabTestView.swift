@@ -520,7 +520,7 @@ struct AddLabTestView: View {
             // the original parse(text:) if V2 returns < 3 markers.
             let v2 = PDFNativeParser.parseVision(text: result.text)
             let v1 = PDFNativeParser.parse(text: result.text)
-            let best = pickBestParse(v1: v1, v2: v2)
+            let best = AddLabTestView.pickBestParse(v1: v1, v2: v2)
             if let parsed = best, parsed.markers.count >= 3 {
                 let src = (v2 != nil && v2!.markers.count >= (v1?.markers.count ?? 0)) ? "vision" : "line"
                 print("[SomaAI] 5d-twenty-eighth: using \(src) parser, \(parsed.markers.count) markers")
