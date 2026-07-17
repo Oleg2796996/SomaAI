@@ -513,8 +513,17 @@ struct AddLabTestView: View {
         // исследование осадка), we get markers WITHOUT calling
         // the LLM extractor — saving 5-10 seconds per scan.
         if !isPDF {
-            if let parsed = PDFNativeParser.parse(text: result.text), parsed.markers.count >= 5 {
-                print("[SomaAI] 5d-scan-regex-first: recovered \(parsed.markers.count) markers from OCR text (skipping LLM extract)")
+            // 5d-twenty-eighth: try VISION-aware parser FIRST. It uses
+            // a curated whitelist of urine marker names + per-token
+            // classification, designed to cope with Vision OCR's
+            // single-space, header-interleaved output. Falls back to
+            // the original parse(text:) if V2 returns < 3 markers.
+            let v2 = PDFNativeParser.parseVision(text: result.text)
+            let v1 = PDFNativeParser.parse(text: result.text)
+            let best = pickBestParse(v1: v1, v2: v2)
+            if let parsed = best, parsed.markers.count >= 3 {
+                let src = (v2 != nil && v2!.markers.count >= (v1?.markers.count ?? 0)) ? "vision" : "line"
+                print("[SomaAI] 5d-twenty-eighth: using \(src) parser, \(parsed.markers.count) markers")
                 self.pdfNativeMarkers = parsed.markers
                 // 5d-scan-regex-first-fix: also extract the date from
                 // the OCR text so the short-circuit at line 452 can
@@ -875,6 +884,18 @@ private struct ImportButtonsView: View {
 
 // MARK: - Sprint 4.9b: date parsing from LLM extraction
 extension AddLabTestView {
+    /// 5d-twenty-eighth: pick the better of two parses. Prefers
+    /// the one with more markers, breaks ties by physchem count
+    /// (physchem has more data quality issues, so we still want
+    /// the line-based parser to win there if it found the same
+    /// number).
+    static func pickBestParse(v1: PDFNativeParser.PDFParseResult?,
+                              v2: PDFNativeParser.PDFParseResult?) -> PDFNativeParser.PDFParseResult? {
+        guard v1 != nil || v2 != nil else { return nil }
+        if v1 == nil { return v2 }
+        if v2 == nil { return v1 }
+        return v2!.markers.count >= v1!.markers.count ? v2 : v1
+    }
     /// Parses dates from various formats the LLM or LocalExtractor may return.
     /// Supports: ISO "YYYY-MM-DD", "DD.MM.YYYY", "DD/MM/YYYY", "DD-MM-YYYY",
     /// "YYYY/MM/DD". Returns nil if unparseable.

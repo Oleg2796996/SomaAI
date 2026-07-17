@@ -807,4 +807,363 @@ enum PDFNativeParser {
         }
         return markers
     }
+
+    // MARK: - parseTableV2: Vision OCR text parser (5d-twenty-eighth)
+    //
+    // CONTEXT: `parseTable` above assumes PDFKit-style "2+ spaces as
+    // column separator" layout and a STRICT column header
+    // (Показатель/Результат/Норма/Единицы on consecutive lines).
+    // Vision OCR (macOS/iOS Vision framework, NSAttributedString-based
+    // confidence 0.6-0.8) emits single-space-separated tokens, may
+    // merge header words with first data row, and may break single
+    // values across 2-3 lines.
+    //
+    // Real Vision OCR output (from Oleg's 5d-twenty-seventh logs at
+    // 16.07.2026 17:39, confidence=0.7632):
+    //   line[1]: 'Цвет Результат соломенно - Норма Единицы Комментарий'
+    //   line[2]: 'желтый соломенно - желтый'
+    //   line[3]: 'Прозрачность прозрачная прозрачная'
+    //   line[4]: 'Относительная плотность Реакция 1,027 1,008 - 1,025 г/мл повышено'
+    //   line[5]: 'Белок : 5 - 7,5 0 - 0,1'
+    //   line[6]: 'Глюкоза г/л'
+    //
+    // `parseTable` cannot find the column header (because header
+    // words are interleaved with data) → foundHeader=false → 0
+    // markers recovered.
+    //
+    // STRATEGY (5d-twenty-eighth):
+    //   1. Pre-filter: drop obvious footer/header lines BEFORE parsing.
+    //   2. Whitelist-based: recognise marker names by matching against
+    //      a curated set of urine-marker names (case-insensitive,
+    //      tolerant of trailing punctuation). This bypasses the need
+    //      to find the column header.
+    //   3. Regex-based per-line extraction: for each marker-name hit,
+    //      consume tokens after the name and classify them into
+    //      value / range / unit / comment by shape.
+    //   4. Wrap-merge: lowercase-first / digit-first lines are
+    //      continuations of the previous marker's value or range.
+    //   5. Section split by the two real section headers (we still
+    //      need to know which section a marker belongs to, for unit
+    //      inference later).
+
+    /// 5d-twenty-eighth: known marker names for urinalysis. Matched
+    /// case-insensitive prefix-substring against the line.
+    /// Order matters: longer names must come first so "Кетоновые тела"
+    /// matches before "Кетоновые".
+    private static let urineMarkerNames: [String] = [
+        // Физико-химические свойства
+        "Цвет",
+        "Прозрачность",
+        "Относительная плотность",
+        "Реакция",  // pH
+        "Белок",
+        "Глюкоза",
+        "Кетоновые тела",
+        "Уробилиноген",
+        "Билирубин",
+        "Нитриты",
+        "Реакция на кровь",
+        "Альбумин",
+        "Альбумин/Креатинин",
+        "Аскорбиновая кислота",
+        // Микроскопическое исследование осадка
+        "Лейкоциты",
+        "Эритроциты неизмененные",
+        "Эритроциты измененные",
+        "Эритроциты",
+        "Цилиндры гиалиновые",
+        "Цилиндры зернистые",
+        "Цилиндры восковидные",
+        "Цилиндры",
+        "Клетки плоского эпителия",
+        "Клетки переходного эпителия",
+        "Клетки эпителия",
+        "Слизь",
+        "Бактерии",
+        "Дрожжеподобные грибы",
+        "Дрожжеподобные",
+        "Сперматозоиды",
+        "Соли",
+        "Неорганический осадок",
+    ]
+
+    /// 5d-twenty-eighth: lines that are clearly NOT marker data —
+    /// patient info, doctor signatures, page footers, etc.
+    private static let visionFooterBlacklist: [String] = [
+        "Подпись", "Воробьева", "Врач", "Ф.И.О.", "Дата рождения",
+        "№ карты", "Биоматериал", "Лаборатория", "Пол",
+        "Стр.", "Page", "Дата выдачи", "Заявка №", "Заказчик:",
+        "Исследование выполнил", "Исследование выполнено",
+        "пациента", "Отделение", "Карта", "Метод:",
+        "Анализы выполнены", "Анализ выполнен", "оборудовани",
+        "подтвердил", "Исполнитель", "Результат лабораторного",
+        "не является диагнозом", "Стр. ",
+    ]
+
+    /// True if any blacklist keyword is found at the start or as a
+    /// whole word in the line.
+    private static func isBlacklistedVisionLine(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return true }  // empty lines dropped here
+        for kw in visionFooterBlacklist {
+            if t.hasPrefix(kw) || t == kw { return true }
+            // Whole-word match: keyword surrounded by spaces.
+            if t.contains(" " + kw) || t.contains(kw + " ") { return true }
+            // Bare prefix: "Заявка №: 6112507" → "Заявка" prefix.
+            if t.hasPrefix(kw + ":") || t.hasPrefix(kw + " №") { return true }
+        }
+        return false
+    }
+
+    /// 5d-twenty-eighth: try to find a marker name at the start of
+    /// the line. Returns (canonicalName, lengthOfMatch) if found.
+    private static func matchMarkerNameAtStart(_ line: String) -> (name: String, matched: String)? {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        for n in urineMarkerNames {
+            // Try exact-prefix match (case-insensitive), then with
+            // space/colon/dash boundary.
+            if t.lowercased().hasPrefix(n.lowercased() + " ") ||
+               t.lowercased().hasPrefix(n.lowercased() + ":") ||
+               t.lowercased() == n.lowercased() {
+                return (n, n)
+            }
+        }
+        return nil
+    }
+
+    /// 5d-twenty-eighth: Vision OCR parser. Splits the cleaned OCR
+    /// text into lines, drops blacklist lines, and walks the
+    /// remaining lines recognising marker-name starts.
+    private static func parseTableV2(in text: String, sectionHeader: String) -> [PDFMarker] {
+        // 1. Section split.
+        guard let sectionStartRange = text.range(of: sectionHeader) else {
+            print("[SomaAI] parseTableV2[\(sectionHeader)]: section header not found")
+            return []
+        }
+        let after = text[sectionStartRange.upperBound...]
+        // Take up to the next section or end of text.
+        let sectionBoundary = ["Микроскопическое исследование осадка",
+                               "Физико-химические свойства"]
+        var slice = String(after)
+        for boundary in sectionBoundary where boundary != sectionHeader {
+            if let r = slice.range(of: boundary) {
+                slice = String(slice[..<r.lowerBound])
+            }
+        }
+        // 2. Normalise whitespace and split into lines.
+        let cleaned = slice
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var lines = cleaned
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        // 3. Drop blacklist lines.
+        let before = lines.count
+        lines = lines.filter { !isBlacklistedVisionLine($0) }
+        let dropped = before - lines.count
+        print("[SomaAI] parseTableV2[\(sectionHeader)]: \(lines.count) lines after blacklist (dropped \(dropped))")
+
+        // 4. Walk lines. If a line starts with a known marker name,
+        // begin a new marker. If it starts with lowercase or digit,
+        // append it to the previous marker's value (wrap-merge).
+        var markers: [PDFMarker] = []
+        var i = 0
+        while i < lines.count {
+            let l = lines[i]
+
+            // Check for new marker name at the start.
+            if let hit = matchMarkerNameAtStart(l) {
+                // Extract everything AFTER the name on the same line.
+                let after = String(l.dropFirst(hit.matched.count)).trimmingCharacters(in: .whitespaces)
+                // Strip leading colon/space.
+                let tail = after.hasPrefix(":") ? String(after.dropFirst()).trimmingCharacters(in: .whitespaces) : after
+                // Split tail into tokens. OCR usually keeps them in
+                // order: value, range, unit, comment.
+                let toks = tail.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+                let (val, range, unit, comment) = classifyTokens(toks)
+                markers.append(PDFMarker(
+                    name: hit.name,
+                    value: val.isEmpty ? nil : val,
+                    unit: unit,
+                    referenceRange: range,
+                    comment: comment
+                ))
+                i += 1
+                continue
+            }
+
+            // Not a marker line. If it starts with lowercase or digit,
+            // it's a wrap-merge continuation of the previous marker's
+            // value. Otherwise, skip.
+            if let first = l.first, (first.isLowercase || first.isNumber),
+               markers.last != nil {
+                let last = markers.last!
+                let prevVal = last.value ?? ""
+                let joined: String
+                if prevVal.isEmpty {
+                    joined = l
+                } else if prevVal.hasSuffix("-") {
+                    var v = prevVal
+                    while v.hasSuffix(" ") { v.removeLast() }
+                    while v.hasSuffix("-") { v.removeLast() }
+                    joined = v + l
+                } else {
+                    joined = prevVal + " " + l
+                }
+                markers[markers.count - 1] = PDFMarker(
+                    name: last.name,
+                    value: joined,
+                    unit: last.unit,
+                    referenceRange: last.referenceRange,
+                    comment: last.comment
+                )
+                i += 1
+                continue
+            }
+            i += 1
+        }
+
+        print("[SomaAI] parseTableV2[\(sectionHeader)]: parsed \(markers.count) markers")
+        for (idx, m) in markers.prefix(5).enumerated() {
+            print("[SomaAI]   v2[\(idx)]: name='\(m.name)' value='\(m.value ?? "nil")' range='\(m.referenceRange ?? "nil")' unit='\(m.unit ?? "nil")' comment='\(m.comment ?? "nil")'")
+        }
+        return markers
+    }
+
+    /// 5d-twenty-eighth: classify a token list into (value, range,
+    /// unit, comment). Heuristic per token shape.
+    /// 5d-twenty-eighth-improvement: also try to merge multi-token
+    /// ranges like ["5", "-", "7,5"] → "5 - 7,5" before falling
+    /// back to per-token classification. This handles the
+    /// common OCR mess "5 - 7,5 0 - 0,1" where two ranges are
+    /// emitted without their leading marker name.
+    private static func classifyTokens(_ tokens: [String]) -> (String, String?, String?, String?) {
+        var value: String? = nil
+        var range: String? = nil
+        var unit: String? = nil
+        var comment: String? = nil
+        var leftovers: [String] = []
+        var idx = 0
+        while idx < tokens.count {
+            let t = tokens[idx]
+            if isUnitToken(t) {
+                unit = (unit.map { $0 + " " } ?? "") + t
+                idx += 1
+                continue
+            }
+            // Try to merge a multi-token range: <num> - <num>.
+            if idx + 2 < tokens.count,
+               isNumericish(tokens[idx]),
+               tokens[idx + 1] == "-",
+               isNumericish(tokens[idx + 2]) {
+                let merged = "\(tokens[idx]) - \(tokens[idx + 2])"
+                range = merged
+                idx += 3
+                continue
+            }
+            if isRangeToken(t) {
+                range = t
+                idx += 1
+                continue
+            }
+            if isValueToken(t) {
+                if value == nil { value = t } else { leftovers.append(t) }
+                idx += 1
+                continue
+            }
+            leftovers.append(t)
+            idx += 1
+        }
+        if !leftovers.isEmpty {
+            comment = leftovers.joined(separator: " ")
+        }
+        return (value ?? "", range, unit, comment)
+    }
+
+    private static func isNumericish(_ t: String) -> Bool {
+        return !t.isEmpty && t.allSatisfy { "0123456789,.".contains($0) }
+    }
+
+    /// 5d-twenty-eighth: does this token look like a unit?
+    private static func isUnitToken(_ t: String) -> Bool {
+        let kws = ["/", "мкл", "мг", "ммоль", "мкмоль", "ед.", "поле зр", "препар", "мл/мин", "г/мл", "г/л", "мг/дл", "мг/л"]
+        let lo = t.lowercased()
+        for k in kws { if lo.contains(k) { return true } }
+        return false
+    }
+
+    /// 5d-twenty-eighth: does this token look like a reference range?
+    /// e.g. "1,008", "1,008-1,025", "1,008 - 1,025", "<3,4", ">5,0".
+    private static func isRangeToken(_ t: String) -> Bool {
+        let s = t.replacingOccurrences(of: " ", with: "")
+        if s.isEmpty { return false }
+        // Must contain a digit.
+        guard s.contains(where: { $0.isNumber }) else { return false }
+        // Reject pure text.
+        if s.allSatisfy({ !$0.isNumber && $0 != "," && $0 != "." && $0 != "-" && $0 != "<" && $0 != ">" }) { return false }
+        // Reject obvious non-range values.
+        let lower = s.lowercased()
+        if lower.contains("отрицательно") || lower.contains("обнаруж") { return false }
+        // Accept if has digit, dash/dot/comma, OR comparison operator.
+        let hasDigit = s.contains(where: { $0.isNumber })
+        let hasRangeShape = s.contains("-") || s.contains("<") || s.contains(">")
+        return hasDigit && hasRangeShape
+    }
+
+    /// 5d-twenty-eighth: does this token look like a value?
+    /// Numeric, "отрицательно", "не обнаружено", "отсутствуют",
+    /// "единичные", "небольшое", colour words, or partial range.
+    private static func isValueToken(_ t: String) -> Bool {
+        let lo = t.lowercased()
+        let valueKeywords = ["не обнаружено", "отсутствуют", "отсутствует",
+                             "отрицательно", "единичные", "небольшое",
+                             "большое", "умеренное", "много", "мало",
+                             "соломенно", "прозрачная", "мутная",
+                             "желтый", "желтая", "в пре",
+                             "в п/з", "в п/зр", "в поле зр"]
+        for kw in valueKeywords {
+            if lo.contains(kw) { return true }
+        }
+        // Pure numeric / range (treat as value).
+        if t.allSatisfy({ "0123456789,.- ".contains($0) }) { return true }
+        if let first = t.first, first.isNumber { return true }
+        return false
+    }
+
+    /// 5d-twenty-eighth: entry point for Vision OCR text. Used by
+    /// AddLabTestView scan path as an alternative to `parse(text:)`.
+    /// Returns the same PDFParseResult so the rest of the pipeline
+    /// (processAndVerify, LabTestDetailView) works without code
+    /// changes.
+    static func parseVision(text ocrText: String) -> PDFParseResult? {
+        let cleaned = ocrText.replacingOccurrences(of: "\r\n", with: "\n")
+                             .replacingOccurrences(of: "\r", with: "\n")
+        guard cleaned.count > 200 else { return nil }
+        let physchem = parseTableV2(in: cleaned, sectionHeader: "Физико-химические свойства")
+        let micro    = parseTableV2(in: cleaned, sectionHeader: "Микроскопическое исследование осадка")
+        var all: [PDFMarker] = []
+        all.append(contentsOf: physchem)
+        all.append(contentsOf: micro)
+        // De-dup by name+value.
+        var seen: Set<String> = []
+        all = all.filter { m in
+            let k = (m.name.lowercased()) + "|" + (m.value ?? "").lowercased()
+            return seen.insert(k).inserted
+        }
+        // Drop markers with no value AND no range.
+        all = all.filter { m in
+            let hasValue = !(m.value?.isEmpty ?? true)
+            let hasRange = !(m.referenceRange?.isEmpty ?? true)
+            return !m.name.isEmpty && (hasValue || hasRange)
+        }
+        if all.count < 3 {
+            print("[SomaAI] PDFNativeParser(vision): only \(all.count) markers (need >=3) — falling back")
+            return nil
+        }
+        print("[SomaAI] PDFNativeParser(vision): recovered \(all.count) markers (physchem=\(physchem.count) micro=\(micro.count))")
+        let patient = parsePatient(text: cleaned)
+        return PDFParseResult(markers: all, patient: patient)
+    }
 }
