@@ -116,7 +116,7 @@ enum PDFNativeParser {
         // Cyrillic letter and slipped past isMarkerName).
         all = all.filter { m in
             let hasValue = !(m.value?.isEmpty ?? true)
-            let hasRange = !(m.range?.isEmpty ?? true)
+            let hasRange = !(m.referenceRange?.isEmpty ?? true)
             let hasName  = !m.name.isEmpty
             return hasName && (hasValue || hasRange)
         }
