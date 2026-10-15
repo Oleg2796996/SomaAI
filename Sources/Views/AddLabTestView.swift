@@ -265,6 +265,11 @@ struct AddLabTestView: View {
             showingErrorAlert = true
             return
         }
+        // 5d-second-doc-fix: clear selection immediately after loading.
+        // PhotosPicker retains the previous selection; re-picking the
+        // same photo(s) otherwise does NOT fire onChange (value didn't
+        // change) and processing silently never starts.
+        selectedItems = []
         let useTable = (documentType == .labResult) || Self.tableModeEnabled
         print("[SomaAI] tableMode=" + useTable.description + " docType=" + documentType.rawValue)
         let result = await OCRPipeline.shared.process(pages: images, useTableMode: useTable)
@@ -832,6 +837,18 @@ struct AddLabTestView: View {
             showingErrorAlert = true
             print("[SomaAI] Save error: \(error)")
         }
+        // 5d-second-doc-fix: reset per-document state so the next
+        // imported document starts from a clean slate (stale pending
+        // markers/extraction otherwise leak into the next document).
+        pendingMarkers = []
+        pendingMedications = []
+        pendingSections = []
+        pendingExtraction = nil
+        recognizedText = ""
+        pdfNativeDate = nil
+        pdfNativeMarkers = nil
+        scannedPages = []
+        capturedImage = nil
         dismiss()
     }
 }
