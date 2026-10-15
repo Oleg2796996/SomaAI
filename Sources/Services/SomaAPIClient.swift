@@ -84,7 +84,9 @@ struct SomaAPISettings: Codable {
     /// app gets consistent ~3-8s responses again.
     static let defaultSettings = SomaAPISettings(
         baseURL: "https://ai.wormsoft.ru/api/gpt",
-        modelName: "wormsoft/code/medium"
+        // 5d-thirty-first: bench 2026-10-15 — best JSON extraction + RU quality,
+        // cheap tier ("Старт"), fastest (5.1s extract / 3.4s consult).
+        modelName: "zai/glm-5.3-flash:NVFP4"
     )
 
     static func load() -> SomaAPISettings {
@@ -146,11 +148,13 @@ enum APIProvider: String, CaseIterable, Identifiable, Codable {
     var modelChain: [String] {
         switch self {
         case .wormsoft:
-            // Code-specialized chain (best for JSON extraction).
+            // 5d-thirty-first: bench-verified chain. glm-5.3-flash:NVFP4
+            // = 3/3 correct JSON at 5.1s; flash (full) = 3/3 at 10.3s;
+            // legacy code/medium kept as last resort.
             return [
-                "wormsoft/code/high",
-                "wormsoft/code/medium",
-                "wormsoft/agent/low"
+                "zai/glm-5.3-flash:NVFP4",
+                "zai/glm-5.3-flash",
+                "wormsoft/code/medium"
             ]
         case .openai:
             // OpenAI: 4o-mini is fast + cheap, then 4o if needed.
