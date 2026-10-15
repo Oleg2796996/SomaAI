@@ -763,24 +763,14 @@ enum PDFNativeParser {
                 }
             }
 
-            // Classify columns into value / range / unit / comment.
-            // 1st = value, 2nd = range, 3rd = unit or comment,
-            // 4th = comment.
-            var value: String? = nil
-            var range: String? = nil
-            var unit: String? = nil
-            var comment: String? = nil
-            if allColumns.count >= 1 { value = allColumns[0] }
-            if allColumns.count >= 2 { range = allColumns[1] }
-            if allColumns.count >= 3 {
-                let third = allColumns[2]
-                if isUnit(third) {
-                    unit = third
-                } else {
-                    comment = third
-                }
-            }
-            if allColumns.count >= 4 { comment = allColumns[3] }
+            // 5d-twenty-ninth: classify via common TokenClassifier
+            // (range-first order) instead of positional assumption.
+            // Fixes range-only markers where value got the range text.
+            let c = TokenClassifier.classify(allColumns)
+            let value = c.value
+            let range = c.referenceRange
+            let unit = c.unit
+            let comment = c.comment
 
             // Filter out cases where the value is actually a duplicate
             // of the name (no real value). Example: when PDFKit emits
@@ -988,7 +978,7 @@ enum PDFNativeParser {
                 let c = TokenClassifier.classify(toks)
                 markers.append(PDFMarker(
                     name: hit.name,
-                    value: c.value.isEmpty ? nil : c.value,
+                    value: c.value,
                     unit: c.unit,
                     referenceRange: c.referenceRange,
                     comment: c.comment
@@ -1035,55 +1025,6 @@ enum PDFNativeParser {
         return markers
     }
 
-    /// 5d-twenty-eighth: classify a token list into (value, range,
-    /// unit, comment). Heuristic per token shape.
-    /// 5d-twenty-eighth-improvement: also try to merge multi-token
-    /// ranges like ["5", "-", "7,5"] → "5 - 7,5" before falling
-    /// back to per-token classification. This handles the
-    /// common OCR mess "5 - 7,5 0 - 0,1" where two ranges are
-    /// emitted without their leading marker name.
-    private static func classifyTokens(_ tokens: [String]) -> (String, String?, String?, String?) {
-        var value: String? = nil
-        var range: String? = nil
-        var unit: String? = nil
-        var comment: String? = nil
-        var leftovers: [String] = []
-        var idx = 0
-        while idx < tokens.count {
-            let t = tokens[idx]
-            if isUnitToken(t) {
-                unit = (unit.map { $0 + " " } ?? "") + t
-                idx += 1
-                continue
-            }
-            // Try to merge a multi-token range: <num> - <num>.
-            if idx + 2 < tokens.count,
-               isNumericish(tokens[idx]),
-               tokens[idx + 1] == "-",
-               isNumericish(tokens[idx + 2]) {
-                let merged = "\(tokens[idx]) - \(tokens[idx + 2])"
-                range = merged
-                idx += 3
-                continue
-            }
-            if isRangeToken(t) {
-                range = t
-                idx += 1
-                continue
-            }
-            if isValueToken(t) {
-                if value == nil { value = t } else { leftovers.append(t) }
-                idx += 1
-                continue
-            }
-            leftovers.append(t)
-            idx += 1
-        }
-        if !leftovers.isEmpty {
-            comment = leftovers.joined(separator: " ")
-        }
-        return (value ?? "", range, unit, comment)
-    }
 
     fileprivate static func isNumericish(_ t: String) -> Bool {
         return !t.isEmpty && t.allSatisfy { "0123456789,.".contains($0) }
@@ -1115,25 +1056,6 @@ enum PDFNativeParser {
         return hasDigit && hasRangeShape
     }
 
-    /// 5d-twenty-eighth: does this token look like a value?
-    /// Numeric, "отрицательно", "не обнаружено", "отсутствуют",
-    /// "единичные", "небольшое", colour words, or partial range.
-    fileprivate static func isValueToken(_ t: String) -> Bool {
-        let lo = t.lowercased()
-        let valueKeywords = ["не обнаружено", "отсутствуют", "отсутствует",
-                             "отрицательно", "единичные", "небольшое",
-                             "большое", "умеренное", "много", "мало",
-                             "соломенно", "прозрачная", "мутная",
-                             "желтый", "желтая", "в пре",
-                             "в п/з", "в п/зр", "в поле зр"]
-        for kw in valueKeywords {
-            if lo.contains(kw) { return true }
-        }
-        // Pure numeric / range (treat as value).
-        if t.allSatisfy({ "0123456789,.- ".contains($0) }) { return true }
-        if let first = t.first, first.isNumber { return true }
-        return false
-    }
 
     /// 5d-twenty-eighth: entry point for Vision OCR text. Used by
     /// AddLabTestView scan path as an alternative to `parse(text:)`.
@@ -1171,54 +1093,80 @@ enum PDFNativeParser {
     }
 }
 
-// MARK: - 5d-twenty-ninth-pt1: TokenClassifier
+// MARK: - 5d-twenty-ninth: TokenClassifier
 //
-// Common token-classification helper extracted from parseTableV2's
-// classifyTokens. PURE EXTRACT: no new logic, no behavior change.
-// Next step (5d-twenty-ninth): switch parseTable / parseTableByCoords
-// to this helper, then fix the value/range order (range-first).
+// Common token-classification helper. NEW LOGIC (range-first):
+//   1. attribute rows (Цвет/Прозрачность) — pure text result
+//   2. multi-token numeric range "num - num" → referenceRange
+//   3. single-token range shape ("1,008-1,025", "<3,4", ">5,0") → referenceRange
+//   4. unit token → unit
+//   5. first remaining token → value, rest → comment
+// This fixes the root cause of range-only markers (Кетоновые тела,
+// Реакция) getting range written into value.
 enum TokenClassifier {
     struct Result {
-        var value: String
+        var value: String?
         var referenceRange: String?
         var unit: String?
         var comment: String?
     }
+    // attribute (colour / transparency) — the text IS the result
+    private static let attributePatterns = [
+        "соломенно", "желтый", "желтая", "жёлтый", "жёлтая",
+        "прозрачная", "мутная", "бесцветная", "слабо-желтый", "слабо-жёлтый",
+        "коричневат"
+    ]
+    /// Classify tokens (columns/cells after the marker name) into
+    /// value / referenceRange / unit / comment. RANGE-FIRST order.
     static func classify(_ tokens: [String]) -> Result {
-        let (value, range, unit, comment) = classifyTokensImpl(tokens)
-        return Result(value: value, referenceRange: range, unit: unit, comment: comment)
-    }
-    private static func classifyTokensImpl(_ tokens: [String]) -> (String, String?, String?, String?) {
-        var value: String? = nil
-        var range: String? = nil
-        var unit: String? = nil
-        var comment: String? = nil
-        var leftovers: [String] = []
+        var r = Result()
         var idx = 0
+        var leftovers: [String] = []
+
+        // 0. Attribute rows: no numerics anywhere + colour/transparency word
+        let joinedAll = tokens.joined(separator: " ")
+        let hasNumeric = tokens.contains { $0.contains(where: { $0.isNumber }) }
+        if !hasNumeric,
+           attributePatterns.contains(where: { joinedAll.lowercased().contains($0) }) {
+            r.value = joinedAll
+            return r
+        }
+
         while idx < tokens.count {
             let t = tokens[idx]
-            if PDFNativeParser.isUnitToken(t) {
-                unit = (unit.map { $0 + " " } ?? "") + t
-                idx += 1
-                continue
-            }
-            // Try to merge a multi-token range: <num> - <num>.
+            let lo = t.lowercased()
+            // (a) multi-token numeric range: num - num
             if idx + 2 < tokens.count,
                PDFNativeParser.isNumericish(tokens[idx]),
                tokens[idx + 1] == "-",
                PDFNativeParser.isNumericish(tokens[idx + 2]) {
-                let merged = "\(tokens[idx]) - \(tokens[idx + 2])"
-                range = merged
+                if r.referenceRange == nil {
+                    r.referenceRange = "\(tokens[idx]) - \(tokens[idx + 2])"
+                }
                 idx += 3
                 continue
             }
-            if PDFNativeParser.isRangeToken(t) {
-                range = t
+            // (b) single-token range shape: "1,008-1,025", "<3,4", ">5,0", "0-1"
+            if r.referenceRange == nil, PDFNativeParser.isRangeToken(t) {
+                r.referenceRange = t
                 idx += 1
                 continue
             }
-            if PDFNativeParser.isValueToken(t) {
-                if value == nil { value = t } else { leftovers.append(t) }
+            // (c) unit
+            if r.unit == nil, PDFNativeParser.isUnitToken(t) {
+                r.unit = t
+                idx += 1
+                continue
+            }
+            // (d) negative phrase "не обнаружено/не выявлено" (bigram)
+            if r.value == nil, lo == "не", idx + 1 < tokens.count {
+                r.value = t + " " + tokens[idx + 1]
+                idx += 2
+                continue
+            }
+            // (e) value: first remaining token wins (numeric or text result)
+            if r.value == nil {
+                r.value = t
                 idx += 1
                 continue
             }
@@ -1226,8 +1174,8 @@ enum TokenClassifier {
             idx += 1
         }
         if !leftovers.isEmpty {
-            comment = leftovers.joined(separator: " ")
+            r.comment = leftovers.joined(separator: " ")
         }
-        return (value ?? "", range, unit, comment)
+        return r
     }
 }
